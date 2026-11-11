@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info
+.venv
+.pytest_cache/
+
+# Ergebnisse beim Ausprobieren
+*.pdf
+*_vorschau/
+regeln*.txt
+
+# System und Werkzeuge
+.DS_Store
+.impeccable/
+.screenshots/

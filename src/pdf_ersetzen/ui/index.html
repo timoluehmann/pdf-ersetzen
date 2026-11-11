@@ -1,0 +1,1256 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF ersetzen</title>
+<style>
+:root {
+  --bg: #f4f4f2;
+  --flaeche: #ffffff;
+  --flaeche-2: #f9f9f7;
+  --linie: #e3e2de;
+  --linie-stark: #cfcdc7;
+  --text: #1c1c1a;
+  --text-2: #5f5e59;
+  --text-3: #8d8b84;
+  --akzent: #2f5bea;
+  --akzent-text: #ffffff;
+  --akzent-weich: rgb(47 91 234 / 0.12);
+  --akzent-rand: rgb(47 91 234 / 0.55);
+  --treffer: rgb(22 163 74 / 0.16);
+  --treffer-rand: rgb(22 163 74 / 0.7);
+  --einf-weich: rgb(47 91 234 / 0.06);
+  --einf-rand: rgb(47 91 234 / 0.4);
+  --warn: #a35a00;
+  --warn-weich: #fff3e0;
+  --fehler: #c0262d;
+  --fehler-weich: #fdecec;
+  --schatten: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.08);
+  --schatten-seite: 0 1px 3px rgb(0 0 0 / 0.12);
+  --r-1: 6px;
+  --r-2: 10px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --schrift: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --schrift-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --t-klein: 12px;
+  --t-normal: 14px;
+  --t-gross: 16px;
+  --dauer: 140ms;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615;
+    --flaeche: #1f1f1d;
+    --flaeche-2: #262624;
+    --linie: #33322f;
+    --linie-stark: #45443f;
+    --text: #ecebe7;
+    --text-2: #a9a7a0;
+    --text-3: #7c7a73;
+    --akzent: #6b8cff;
+    --akzent-text: #0d1330;
+    --akzent-weich: rgb(107 140 255 / 0.16);
+    --warn: #f0a94b;
+    --warn-weich: rgb(240 169 75 / 0.12);
+    --fehler: #ff7a7f;
+    --fehler-weich: rgb(255 122 127 / 0.12);
+    --schatten: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.4);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: var(--t-normal)/1.45 var(--schrift);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--akzent); outline-offset: 2px; }
+
+/* ---------- Kopfzeile ---------- */
+.kopf {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: var(--s-3);
+  height: 52px; padding: 0 var(--s-4);
+  background: var(--flaeche); border-bottom: 1px solid var(--linie);
+}
+.marke { font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+.datei { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.status { color: var(--text-3); font-size: var(--t-klein); white-space: nowrap; }
+.luecke { flex: 1; }
+
+.knopf {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2);
+  min-height: 34px; padding: 0 var(--s-3);
+  border: 1px solid var(--linie-stark); border-radius: var(--r-1);
+  background: var(--flaeche); cursor: pointer; text-decoration: none; white-space: nowrap;
+  transition: background var(--dauer), border-color var(--dauer);
+}
+.knopf:hover { background: var(--flaeche-2); }
+.knopf.primaer { background: var(--akzent); border-color: var(--akzent); color: var(--akzent-text); font-weight: 600; }
+.knopf.primaer:hover { filter: brightness(1.07); }
+.knopf[aria-disabled="true"] { opacity: 0.45; pointer-events: none; }
+.knopf.still { border-color: transparent; background: transparent; color: var(--text-2); }
+.knopf.still:hover { background: var(--flaeche-2); color: var(--text); }
+
+.segment { display: inline-flex; padding: 2px; border-radius: var(--r-1); background: var(--flaeche-2); border: 1px solid var(--linie); }
+.segment button {
+  min-height: 28px; padding: 0 var(--s-3); border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-2); cursor: pointer;
+}
+.segment button[aria-pressed="true"] { background: var(--flaeche); color: var(--text); box-shadow: var(--schatten-seite); font-weight: 550; }
+
+/* ---------- Leerzustand ---------- */
+.leer {
+  display: grid; place-items: center; min-height: calc(100vh - 52px); padding: var(--s-5);
+}
+.ablage {
+  width: min(560px, 100%); padding: var(--s-6) var(--s-5); text-align: center;
+  border: 1.5px dashed var(--linie-stark); border-radius: var(--r-2); background: var(--flaeche);
+  transition: border-color var(--dauer), background var(--dauer);
+}
+body.ziehen .ablage { border-color: var(--akzent); background: var(--akzent-weich); }
+.ablage h1 { font-size: 20px; margin: 0 0 var(--s-2); letter-spacing: -0.01em; }
+.ablage p { margin: 0 0 var(--s-5); color: var(--text-2); }
+.ablage .knopf { min-height: 40px; padding: 0 var(--s-5); }
+
+/* ---------- Arbeitsbereich ---------- */
+.arbeit { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: calc(100vh - 52px); }
+.blatt { overflow: auto; padding: var(--s-5); }
+.seiten { display: flex; flex-direction: column; align-items: center; gap: var(--s-5); }
+.paar { display: flex; gap: var(--s-4); width: 100%; justify-content: center; }
+.seite {
+  position: relative; flex: 0 1 auto; width: min(100%, 820px);
+  background: #fff; box-shadow: var(--schatten-seite); border-radius: 2px;
+}
+.ansicht-vergleich .seite { width: min(50% - var(--s-2), 760px); }
+.seite img { display: block; width: 100%; height: auto; border-radius: 2px; user-select: none; -webkit-user-drag: none; }
+.seite .etikett {
+  position: absolute; top: calc(-1 * var(--s-5) + 4px); left: 0;
+  font-size: var(--t-klein); color: var(--text-3);
+}
+.ebene { position: absolute; inset: 0; }
+.wort { position: absolute; border-radius: 2px; cursor: text; }
+.wort:hover { background: var(--akzent-weich); box-shadow: 0 0 0 1px var(--akzent-rand); }
+.wort.gewaehlt { background: var(--akzent-weich); box-shadow: 0 0 0 1.5px var(--akzent); }
+.markierung { position: absolute; pointer-events: none; border-radius: 2px; background: var(--treffer); box-shadow: 0 0 0 1px var(--treffer-rand); }
+.seite[data-stand="original"] .markierung { display: none; }
+.einfuegung {
+  position: absolute; border-radius: 2px; cursor: move; touch-action: none;
+  background: var(--einf-weich); box-shadow: 0 0 0 1px var(--einf-rand);
+}
+.einfuegung:hover, .einfuegung.aktiv { box-shadow: 0 0 0 1.5px var(--akzent); }
+.einfuegung.zieht { opacity: 0.85; box-shadow: 0 0 0 1.5px var(--akzent), var(--schatten); }
+.seite[data-stand="original"] .einfuegung { display: none; }
+.platzieren .wort, .platzieren .einfuegung { pointer-events: none; }
+.platzieren .seite[data-stand="neu"] .ebene { cursor: crosshair; }
+.geist { position: absolute; pointer-events: none; border-radius: 2px; outline: 1.5px dashed var(--akzent); background: var(--akzent-weich); }
+.hilfslinie { position: absolute; pointer-events: none; background: var(--akzent); opacity: 0.55; }
+.platz-hinweis {
+  position: sticky; top: 0; z-index: 15; width: fit-content; margin: 0 auto var(--s-3);
+  padding: var(--s-2) var(--s-3); border-radius: 999px; font-size: var(--t-klein);
+  background: var(--text); color: var(--bg); box-shadow: var(--schatten);
+}
+.platz-hinweis kbd { background: transparent; color: inherit; border-color: currentColor; opacity: 0.8; }
+.links-aussen { margin-right: auto; }
+.raster { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.raster .fein { stroke: rgb(47 91 234 / 0.09); }
+.raster .doku { stroke: rgb(47 91 234 / 0.38); stroke-dasharray: 3 3; }
+.knopf[aria-pressed="true"] { background: var(--akzent-weich); border-color: var(--akzent-rand); color: var(--akzent); }
+.gruppe { padding: var(--s-3) var(--s-3) var(--s-1); font-size: var(--t-klein); font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* ---------- Editor ---------- */
+.editor {
+  position: absolute; z-index: 10; width: 320px; padding: var(--s-4);
+  background: var(--flaeche); color: var(--text); border: 1px solid var(--linie);
+  border-radius: var(--r-2); box-shadow: var(--schatten);
+  display: grid; gap: var(--s-3);
+}
+.feld { display: grid; gap: var(--s-1); }
+.feld span { font-size: var(--t-klein); color: var(--text-2); font-weight: 550; }
+.feld input, .feld select {
+  width: 100%; min-height: 34px; padding: 0 var(--s-2);
+  border: 1px solid var(--linie-stark); border-radius: var(--r-1); background: var(--flaeche);
+}
+.feld input:focus { outline: 2px solid var(--akzent-rand); outline-offset: 0; border-color: var(--akzent); }
+.feld input.mono { font-family: var(--schrift-mono); font-size: 13px; }
+.zeile { display: flex; gap: var(--s-2); align-items: end; }
+.zeile .feld { flex: 1; }
+.editor .aktionen { display: flex; gap: var(--s-2); justify-content: flex-end; }
+.hinweis { font-size: var(--t-klein); color: var(--text-3); margin: 0; }
+kbd { font-family: var(--schrift-mono); font-size: 11px; padding: 0 4px; border: 1px solid var(--linie-stark); border-radius: 3px; background: var(--flaeche-2); }
+
+/* ---------- Seitenleiste ---------- */
+.leiste {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--flaeche); border-left: 1px solid var(--linie);
+}
+.leiste-kopf { display: flex; align-items: center; justify-content: space-between; padding: var(--s-4) var(--s-4) var(--s-2); }
+.leiste-kopf h2 { font-size: var(--t-normal); margin: 0; font-weight: 650; }
+.liste { flex: 1; overflow: auto; padding: 0 var(--s-2) var(--s-3); margin: 0; list-style: none; }
+.regel {
+  display: grid; grid-template-columns: 1fr auto; gap: var(--s-1) var(--s-2);
+  padding: var(--s-3); border-radius: var(--r-1); cursor: pointer;
+}
+.regel:hover { background: var(--flaeche-2); }
+.regel.aktiv { background: var(--akzent-weich); }
+.regel .alt { color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--linie-stark); overflow-wrap: anywhere; }
+.regel .neu { font-weight: 600; overflow-wrap: anywhere; }
+.regel .neu.leer-text { color: var(--text-3); font-weight: 400; font-style: italic; }
+.regel .meta { grid-column: 1 / -1; font-size: var(--t-klein); color: var(--text-3); }
+.regel .weg { width: 28px; min-height: 28px; padding: 0; align-self: start; }
+.marke-warn, .marke-fehler {
+  grid-column: 1 / -1; font-size: var(--t-klein); padding: var(--s-1) var(--s-2); border-radius: 4px;
+}
+.marke-warn { color: var(--warn); background: var(--warn-weich); }
+.marke-fehler { color: var(--fehler); background: var(--fehler-weich); }
+.leer-liste { padding: var(--s-3) var(--s-4); color: var(--text-2); }
+.leer-liste p { margin: 0 0 var(--s-2); }
+.fuss { border-top: 1px solid var(--linie); padding: var(--s-3) var(--s-4); display: grid; gap: var(--s-3); }
+.fuss .reihe { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.schalter { display: flex; gap: var(--s-2); align-items: center; color: var(--text-2); font-size: var(--t-klein); cursor: pointer; }
+.meldung { margin: 0 var(--s-4) var(--s-3); padding: var(--s-2) var(--s-3); border-radius: var(--r-1); background: var(--fehler-weich); color: var(--fehler); font-size: var(--t-klein); }
+.meldung.info { background: var(--warn-weich); color: var(--warn); }
+
+@media (max-width: 900px) {
+  .arbeit { grid-template-columns: 1fr; height: auto; }
+  .blatt { padding: var(--s-4); }
+  .leiste { border-left: 0; border-top: 1px solid var(--linie); }
+  .ansicht-vergleich .paar { flex-direction: column; align-items: center; }
+  .ansicht-vergleich .seite { width: 100%; }
+  .kopf .datei, .kopf .status, .kopf .luecke { display: none; }
+  .kopf { flex-wrap: wrap; height: auto; padding: var(--s-2) var(--s-4); row-gap: var(--s-2); }
+  .kopf .marke { flex: 1; }
+  .kopf .segment { order: 3; width: 100%; }
+  .kopf .segment button { flex: 1; }
+  .leer { min-height: calc(100vh - 60px); }
+}
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="kopf">
+  <span class="marke">PDF ersetzen</span>
+  <span class="datei" id="dateiname"></span>
+  <span class="status" id="status" aria-live="polite"></span>
+  <span class="luecke"></span>
+  <button class="knopf" id="raster" type="button" aria-pressed="false" title="Raster und Ausrichtungslinien (R)" hidden>Raster</button>
+  <div class="segment" id="ansicht" role="group" aria-label="Ansicht" hidden>
+    <button type="button" data-ansicht="original" aria-pressed="false">Original</button>
+    <button type="button" data-ansicht="neu" aria-pressed="true">Ergebnis</button>
+    <button type="button" data-ansicht="vergleich" aria-pressed="false">Vergleich</button>
+  </div>
+  <button class="knopf still" id="andere" type="button" hidden>Andere Datei</button>
+  <a class="knopf primaer" id="speichern" aria-disabled="true" hidden>PDF speichern</a>
+</header>
+
+<main id="leer" class="leer">
+  <div class="ablage">
+    <h1>PDF hierher ziehen</h1>
+    <p>Danach Text im PDF anklicken und ersetzen.</p>
+    <button class="knopf primaer" id="waehlen" type="button">Datei wählen</button>
+    <p class="hinweis" id="leer-fehler" role="alert" style="margin: 16px 0 0"></p>
+  </div>
+</main>
+
+<div id="arbeit" class="arbeit" hidden>
+  <section class="blatt ansicht-neu" id="blatt" aria-label="Seiten">
+    <div class="platz-hinweis" id="platzhinweis" role="status" hidden>Zielstelle anklicken · <kbd>⌥</kbd> ohne Einrasten · <kbd>Esc</kbd> bricht ab</div>
+    <div class="seiten" id="seiten"></div>
+  </section>
+  <aside class="leiste" aria-label="Änderungen">
+    <div class="leiste-kopf">
+      <h2>Änderungen</h2>
+      <button class="knopf still" id="neue-regel" type="button">+ Manuell</button>
+    </div>
+    <p class="meldung" id="meldung" role="alert" hidden></p>
+    <ul class="liste" id="liste"></ul>
+    <div class="fuss">
+      <label class="schalter"><input type="checkbox" id="teilstring"> Auch innerhalb von Wörtern und Zahlen</label>
+      <div class="reihe">
+        <button class="knopf" id="laden" type="button">Regeln laden</button>
+        <button class="knopf" id="exportieren" type="button">Regeln sichern</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<input type="file" id="datei-pdf" accept="application/pdf,.pdf" hidden>
+<input type="file" id="datei-regeln" accept=".txt,text/plain" hidden>
+
+<template id="editor-vorlage">
+  <form class="editor" autocomplete="off">
+    <label class="feld"><span>Suchen</span><input name="alt" class="mono" required></label>
+    <div class="zeile">
+      <label class="feld"><span>Ersetzen durch</span><input name="neu" class="mono"></label>
+      <label class="feld" style="flex: 0 0 104px"><span>Ausrichtung</span>
+        <select name="ausrichtung">
+          <option value="auto">Auto</option>
+          <option value="links">Links</option>
+          <option value="rechts">Rechts</option>
+        </select>
+      </label>
+    </div>
+    <label class="schalter"><input type="checkbox" name="ueberall"> Überall im Dokument ersetzen</label>
+    <p class="hinweis" data-hinweis><kbd>⇧</kbd>-Klick erweitert die Auswahl.</p>
+    <div class="aktionen">
+      <button class="knopf still links-aussen" type="button" data-kopieren title="Stil und Text übernehmen, dann an anderer Stelle einfügen">Kopieren</button>
+      <button class="knopf" type="button" data-abbrechen>Abbrechen</button>
+      <button class="knopf primaer" type="submit">Übernehmen</button>
+    </div>
+  </form>
+</template>
+
+<template id="einfueg-vorlage">
+  <form class="editor" autocomplete="off">
+    <label class="feld"><span>Eingefügter Text</span><input name="text" class="mono"></label>
+    <label class="feld"><span>Ausrichtung</span>
+      <select name="ausrichtung">
+        <option value="links">Linke Kante bleibt</option>
+        <option value="rechts">Rechte Kante bleibt</option>
+      </select>
+    </label>
+    <p class="hinweis">Ziehen verschiebt. Nach <kbd>Esc</kbd> fein mit Pfeiltasten, <kbd>⇧</kbd> für größere Schritte.</p>
+    <div class="aktionen">
+      <button class="knopf still links-aussen" type="button" data-loeschen>Löschen</button>
+      <button class="knopf" type="button" data-abbrechen>Abbrechen</button>
+      <button class="knopf primaer" type="submit">Übernehmen</button>
+    </div>
+  </form>
+</template>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const zustand = {
+  dok: null,          // {id, name, seiten:[{breite, hoehe}], mitText}
+  regeln: [],         // {alt, neu, ausrichtung}
+  treffer: [],        // je Regel: [{seite, rect, ...}]
+  version: 0,
+  ansicht: "neu",
+  woerter: new Map(), // seite -> {zeilen, woerter}
+  auswahl: null,      // {seite, z, a, b}
+  bearbeitet: null,   // Index der Regel im Editor
+  laufend: 0,
+  einfuegungen: [],   // {seite, x, y, text, stil, skalierung, ausrichtung, ergebnis:{rect, schrift, notizen}}
+  zwischenablage: null, // {text, stil, skalierung}
+  platzieren: false,
+  aktiv: null,        // Index der ausgewählten Einfügung
+};
+const GITTER = 72 / 25.4 * 5; // 5 mm in PDF-Punkten
+zustand.raster = (() => { try { return localStorage.getItem("pdf-ersetzen-raster") === "1"; } catch { return false; } })();
+
+function schalteRaster(an = !zustand.raster) {
+  zustand.raster = an;
+  try { localStorage.setItem("pdf-ersetzen-raster", an ? "1" : "0"); } catch {}
+  $("#raster").setAttribute("aria-pressed", String(an));
+  for (const nr of zustand.woerter.keys()) zeichneEbene(nr);
+}
+
+// Ausrichtungslinien: jede Grundlinie, dazu Spaltenkanten, an denen mindestens zwei Zeilen enden oder beginnen
+function rasterSvg(nr) {
+  const info = zustand.dok.seiten[nr - 1];
+  const daten = zustand.woerter.get(nr);
+  const { breite: b, hoehe: h } = info;
+  const teile = [];
+  for (let x = GITTER; x < b; x += GITTER) teile.push(`<line class="fein" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`);
+  for (let y = GITTER; y < h; y += GITTER) teile.push(`<line class="fein" x1="0" y1="${y}" x2="${b}" y2="${y}"/>`);
+  if (daten) {
+    const zaehle = (werte) => {
+      const m = new Map();
+      for (const w of werte) { const k = Math.round(w * 2) / 2; m.set(k, (m.get(k) || 0) + 1); }
+      return m;
+    };
+    for (const y of zaehle(daten.linien.map((l) => l.y)).keys()) teile.push(`<line class="doku" x1="0" y1="${y}" x2="${b}" y2="${y}"/>`);
+    for (const [x, n] of zaehle([...daten.linien.map((l) => l.x0), ...daten.linien.map((l) => l.x1)])) {
+      if (n >= 2) teile.push(`<line class="doku" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`);
+    }
+  }
+  return `<svg class="raster" viewBox="0 0 ${b} ${h}" preserveAspectRatio="none" aria-hidden="true">`
+    + teile.join("").replaceAll("/>", ' vector-effect="non-scaling-stroke" stroke-width="1"/>') + "</svg>";
+}
+
+const hatAenderungen = () => zustand.regeln.length > 0 || zustand.einfuegungen.some((e) => e.text.trim());
+
+const SCHRIFT = { original: "Originalschrift", system: "Systemschrift", standard: "Standardschrift", ersatz: "Ersatzschrift", "-": "" };
+
+// ---------------------------------------------------------------- Datei öffnen
+
+async function oeffne(datei) {
+  $("#leer-fehler").textContent = "";
+  if (!datei) return;
+  if (!/\.pdf$/i.test(datei.name) && datei.type !== "application/pdf") {
+    return zeigeLeerFehler("Bitte eine PDF-Datei wählen.");
+  }
+  status("Lade …");
+  try {
+    const antwort = await fetch(`/api/oeffnen?name=${encodeURIComponent(datei.name)}`, { method: "POST", body: datei });
+    const daten = await antwort.json();
+    if (!antwort.ok) throw new Error(daten.fehler);
+    zustand.dok = daten;
+    zustand.regeln = [];
+    zustand.treffer = [];
+    zustand.einfuegungen = [];
+    zustand.aktiv = null;
+    beendePlatzieren();
+    zustand.version = 0;
+    zustand.woerter.clear();
+    zustand.auswahl = null;
+    zeigeArbeit();
+    if (!daten.mitText) meldung("Kein Text gefunden. Vermutlich ein Scan, den das Tool nicht bearbeiten kann.", "info");
+  } catch (e) {
+    zeigeLeerFehler(e.message || "Datei konnte nicht geöffnet werden.");
+  } finally {
+    status("");
+  }
+}
+
+function zeigeLeerFehler(text) {
+  $("#leer").hidden = false;
+  $("#arbeit").hidden = true;
+  $("#leer-fehler").textContent = text;
+  $("#leer-fehler").style.color = "var(--fehler)";
+}
+
+function zeigeArbeit() {
+  $("#leer").hidden = true;
+  $("#arbeit").hidden = false;
+  for (const id of ["#ansicht", "#andere", "#speichern", "#raster"]) $(id).hidden = false;
+  $("#dateiname").textContent = zustand.dok.name;
+  document.title = `${zustand.dok.name} · PDF ersetzen`;
+  meldung("");
+  baueSeiten();
+  zeichneListe();
+  aktualisiereSpeichern();
+}
+
+// ---------------------------------------------------------------- Seiten
+
+let beobachter;
+function baueSeiten() {
+  const wurzel = $("#seiten");
+  wurzel.replaceChildren();
+  beobachter?.disconnect();
+  beobachter = new IntersectionObserver((eintraege) => {
+    for (const e of eintraege) if (e.isIntersecting) ladeWoerter(Number(e.target.dataset.seite));
+  }, { rootMargin: "400px" });
+
+  zustand.dok.seiten.forEach((info, i) => {
+    const nr = i + 1;
+    const paar = document.createElement("div");
+    paar.className = "paar";
+    paar.dataset.seite = nr;
+    for (const stand of ["original", "neu"]) {
+      const seite = document.createElement("div");
+      seite.className = "seite";
+      seite.dataset.seite = nr;
+      seite.dataset.stand = stand;
+      seite.style.aspectRatio = `${info.breite} / ${info.hoehe}`;
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = `Seite ${nr}${stand === "neu" ? " (Ergebnis)" : ""}`;
+      img.draggable = false;
+      const et = document.createElement("span");
+      et.className = "etikett";
+      seite.append(img, ebene(nr), et);
+      paar.append(seite);
+    }
+    wurzel.append(paar);
+    beobachter.observe(paar);
+  });
+  wendeAnsichtAn();
+}
+
+function ebene(nr) {
+  const e = document.createElement("div");
+  e.className = "ebene";
+  e.dataset.seite = nr;
+  return e;
+}
+
+function bildUrl(nr, stand) {
+  return `/api/seite?id=${zustand.dok.id}&nr=${nr}&stand=${stand}&v=${stand === "neu" ? zustand.version : 0}`;
+}
+
+function wendeAnsichtAn() {
+  const a = zustand.ansicht;
+  $("#blatt").className = `blatt ansicht-${a}`;
+  for (const b of document.querySelectorAll("#ansicht button")) b.setAttribute("aria-pressed", String(b.dataset.ansicht === a));
+  for (const seite of document.querySelectorAll(".seite")) {
+    const stand = seite.dataset.stand;
+    const sichtbar = a === "vergleich" || (a === "original" ? stand === "original" : stand === "neu");
+    seite.hidden = !sichtbar;
+    const img = seite.querySelector("img");
+    const ziel = bildUrl(seite.dataset.seite, stand === "neu" && hatAenderungen() ? "neu" : "original");
+    if (sichtbar && img.dataset.ziel !== ziel) {
+      img.dataset.ziel = ziel;
+      if (!img.getAttribute("src")) img.src = ziel;
+      else {  // erst tauschen, wenn geladen: kein weißes Aufblitzen
+        const vor = new Image();
+        vor.onload = () => { if (img.dataset.ziel === ziel) img.src = ziel; };
+        vor.src = ziel;
+      }
+    }
+    const et = seite.querySelector(".etikett");
+    if (et && a === "vergleich") et.textContent = `${zustand.dok.seiten.length > 1 ? `Seite ${seite.dataset.seite} · ` : ""}${stand === "neu" ? "Ergebnis" : "Original"}`;
+    else if (et) et.textContent = zustand.dok.seiten.length > 1 ? `Seite ${seite.dataset.seite}` : "";
+  }
+}
+
+async function ladeWoerter(nr) {
+  if (zustand.woerter.has(nr)) return;
+  zustand.woerter.set(nr, null);
+  try {
+    const antwort = await fetch(`/api/woerter?id=${zustand.dok.id}&nr=${nr}`);
+    const daten = await antwort.json();
+    if (!antwort.ok) throw new Error(daten.fehler);
+    zustand.woerter.set(nr, daten);
+    zeichneEbene(nr);
+  } catch (e) {
+    zustand.woerter.delete(nr);
+    meldung(e.message);
+  }
+}
+
+function prozent(rect, info) {
+  const [x0, y0, x1, y1] = rect;
+  return `left:${(x0 / info.breite) * 100}%;top:${(y0 / info.hoehe) * 100}%;width:${((x1 - x0) / info.breite) * 100}%;height:${((y1 - y0) / info.hoehe) * 100}%`;
+}
+
+function zeichneEbene(nr) {
+  const daten = zustand.woerter.get(nr);
+  const info = zustand.dok.seiten[nr - 1];
+  for (const e of document.querySelectorAll(`.ebene[data-seite="${nr}"]`)) {
+    const teile = [];
+    if (daten) daten.woerter.forEach((w, i) => {
+      const gew = istGewaehlt(nr, w) ? " gewaehlt" : "";
+      teile.push(`<div class="wort${gew}" data-i="${i}" style="${prozent(w.r, info)}"></div>`);
+    });
+    zustand.treffer.forEach((liste) => liste.forEach((t) => {
+      if (t.seite === nr) teile.push(`<div class="markierung" style="${prozent(t.rect, info)}"></div>`);
+    }));
+    zustand.einfuegungen.forEach((ein, i) => {
+      if (ein.seite !== nr || !ein.text.trim()) return;
+      const akt = zustand.aktiv === i ? " aktiv" : "";
+      teile.push(`<div class="einfuegung${akt}" data-e="${i}" title="Ziehen zum Verschieben, klicken zum Bearbeiten" style="${prozent(einfRect(ein), info)}"></div>`);
+    });
+    e.innerHTML = (zustand.raster ? rasterSvg(nr) : "") + teile.join("");
+  }
+}
+
+function istGewaehlt(nr, w) {
+  const a = zustand.auswahl;
+  return a && a.seite === nr && a.z === w.z && w.a >= a.a && w.b <= a.b;
+}
+
+// ---------------------------------------------------------------- Auswahl und Editor
+
+$("#seiten").addEventListener("click", (ev) => {
+  if (zustand.platzieren) return platziere(ev);
+  const wort = ev.target.closest(".wort");
+  if (!wort) return;
+  zustand.aktiv = null;
+  const nr = Number(wort.parentElement.dataset.seite);
+  const seite = wort.closest(".seite"); // vor dem Neuzeichnen merken, danach ist `wort` abgehängt
+  const w = zustand.woerter.get(nr).woerter[Number(wort.dataset.i)];
+  const a = zustand.auswahl;
+  if (ev.shiftKey && a && a.seite === nr && a.z === w.z) {
+    zustand.auswahl = { seite: nr, z: w.z, a: Math.min(a.a, w.a), b: Math.max(a.b, w.b) };
+  } else {
+    zustand.auswahl = { seite: nr, z: w.z, a: w.a, b: w.b };
+  }
+  const s = zustand.auswahl;
+  const alt = zustand.woerter.get(nr).zeilen[s.z].slice(s.a, s.b);
+  // Gibt es schon eine Regel für genau diese Stelle? Sonst eine "überall"-Regel mit gleichem Text?
+  const box = auswahlRechteck(s);
+  let vorhanden = zustand.regeln.findIndex((r) => (r.stellen || []).some(([sn, x, y]) =>
+    sn === nr && x >= box[0] - 1 && x <= box[2] + 1 && y >= box[1] - 1 && y <= box[3] + 1));
+  if (vorhanden < 0) vorhanden = zustand.regeln.findIndex((r) => !(r.stellen || []).length && r.alt === alt);
+  zeichneEbene(nr);
+  oeffneEditor(seite, vorhanden >= 0 ? vorhanden : null, alt, { ...s });
+});
+
+function auswahlRechteck(s) {
+  const ws = zustand.woerter.get(s.seite).woerter.filter((w) => w.z === s.z && w.a >= s.a && w.b <= s.b);
+  return [Math.min(...ws.map((w) => w.r[0])), Math.min(...ws.map((w) => w.r[1])),
+          Math.max(...ws.map((w) => w.r[2])), Math.max(...ws.map((w) => w.r[3]))];
+}
+
+// Punkt in der Mitte des tatsächlich gesuchten Texts. Robust, auch wenn der Suchtext
+// gegenüber der Auswahl gekürzt wurde ("Kunde: Muster GmbH" -> "Muster GmbH").
+function ankerFuer(kontext, alt) {
+  const daten = zustand.woerter.get(kontext.seite);
+  const zeile = daten.zeilen[kontext.z];
+  let bester = -1, ueberlappung = -1;
+  for (let o = zeile.indexOf(alt); o >= 0; o = zeile.indexOf(alt, o + 1)) {
+    const u = Math.min(o + alt.length, kontext.b) - Math.max(o, kontext.a);
+    if (u > ueberlappung) { bester = o; ueberlappung = u; }
+  }
+  if (bester < 0 || ueberlappung <= 0) return null;
+  const woerter = daten.woerter.filter((w) => w.z === kontext.z);
+  const mitte = bester + alt.length / 2;
+  const w = woerter.find((w) => mitte >= w.a && mitte < w.b)
+    || woerter.reduce((n, w) => (Math.abs((w.a + w.b) / 2 - mitte) < Math.abs((n.a + n.b) / 2 - mitte) ? w : n));
+  const anteil = Math.min(1, Math.max(0, (mitte - w.a) / (w.b - w.a)));
+  return [kontext.seite, w.r[0] + (w.r[2] - w.r[0]) * anteil, (w.r[1] + w.r[3]) / 2];
+}
+
+let editor = null;
+let editorKontext = null; // angeklickte Stelle, falls vorhanden
+function oeffneEditor(seite, index, alt, kontext = null) {
+  schliesseEditor(false);
+  zustand.bearbeitet = index;
+  editorKontext = kontext;
+  editor = $("#editor-vorlage").content.firstElementChild.cloneNode(true);
+  const regel = index !== null ? zustand.regeln[index] : { alt, neu: alt, ausrichtung: "auto", stellen: [] };
+  editor.alt.value = regel.alt;
+  editor.neu.value = regel.neu;
+  editor.ausrichtung.value = regel.ausrichtung;
+  const hatStelle = Boolean(kontext || (regel.stellen || []).length);
+  editor.ueberall.checked = index !== null ? !(regel.stellen || []).length : !kontext;
+  editor.ueberall.disabled = !hatStelle;
+  if (!hatStelle) editor.querySelector("[data-hinweis]").textContent = "Ohne angeklickte Stelle gilt die Regel überall.";
+  editor.alt.addEventListener("input", () => editor.alt.setCustomValidity(""));
+  const kopieren = editor.querySelector("[data-kopieren]");
+  if (!kontext) kopieren.hidden = true;
+  else kopieren.addEventListener("click", () => kopiere(kontext, editor.alt.value));
+  editor.querySelector('[type="submit"]').textContent = index !== null ? "Ändern" : "Übernehmen";
+
+  if (seite) {
+    const box = auswahlBox(seite);
+    seite.append(editor);
+    const breite = seite.clientWidth;
+    const links = Math.max(8, Math.min(box.left, breite - editor.offsetWidth - 8));
+    editor.style.left = `${links}px`;
+    editor.style.top = `${box.bottom + 8}px`;
+    if (box.bottom + editor.offsetHeight + 16 > seite.clientHeight) editor.style.top = `${Math.max(8, box.top - editor.offsetHeight - 8)}px`;
+  } else {
+    // Manuell: im sichtbaren Bereich der ersten Seite
+    const ziel = document.querySelector(".seite:not([hidden])");
+    ziel.append(editor);
+    editor.style.left = "24px";
+    editor.style.top = `${Math.max(24, $("#blatt").scrollTop - ziel.offsetTop + 24)}px`;
+  }
+  editor.neu.focus();
+  editor.neu.select();
+  editor.addEventListener("submit", (ev) => { ev.preventDefault(); uebernehme(); });
+  editor.querySelector("[data-abbrechen]").addEventListener("click", () => schliesseEditor());
+  editor.addEventListener("keydown", (ev) => { if (ev.key === "Escape") schliesseEditor(); });
+}
+
+function auswahlBox(seite) {
+  const gewaehlt = [...seite.querySelectorAll(".wort.gewaehlt")];
+  const basis = seite.getBoundingClientRect();
+  const rs = gewaehlt.map((g) => g.getBoundingClientRect());
+  return {
+    left: Math.min(...rs.map((r) => r.left)) - basis.left,
+    top: Math.min(...rs.map((r) => r.top)) - basis.top,
+    bottom: Math.max(...rs.map((r) => r.bottom)) - basis.top,
+  };
+}
+
+function schliesseEditor(auswahlWeg = true) {
+  editor?.remove();
+  editor = null;
+  zustand.bearbeitet = null;
+  if (auswahlWeg && zustand.auswahl) {
+    const nr = zustand.auswahl.seite;
+    zustand.auswahl = null;
+    zeichneEbene(nr);
+  }
+  zeichneListe();
+}
+
+function uebernehme() {
+  const regel = { alt: editor.alt.value, neu: editor.neu.value, ausrichtung: editor.ausrichtung.value, stellen: [] };
+  if (!regel.alt.trim()) return editor.alt.focus();
+  const i = zustand.bearbeitet;
+  if (!editor.ueberall.checked) {
+    if (editorKontext) {
+      const anker = ankerFuer(editorKontext, regel.alt);
+      if (!anker) {
+        editor.alt.setCustomValidity("Dieser Text steht nicht an der ausgewählten Stelle.");
+        return editor.alt.reportValidity();
+      }
+      regel.stellen = [anker];
+    } else if (i !== null) {
+      regel.stellen = zustand.regeln[i].stellen || [];
+    }
+  }
+  if (i !== null) zustand.regeln[i] = regel;
+  else {
+    const doppelt = regel.stellen.length ? -1 : zustand.regeln.findIndex((r) => !(r.stellen || []).length && r.alt === regel.alt);
+    if (doppelt >= 0) zustand.regeln[doppelt] = regel; else zustand.regeln.push(regel);
+  }
+  schliesseEditor();
+  if (zustand.ansicht === "original") zustand.ansicht = "neu";
+  berechne();
+}
+
+// ---------------------------------------------------------------- Berechnen
+
+async function berechne() {
+  const lauf = ++zustand.laufend;
+  status("Berechne …");
+  try {
+    const antwort = await fetch(`/api/vorschau?id=${zustand.dok.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        regeln: zustand.regeln,
+        teilstring: $("#teilstring").checked,
+        einfuegungen: zustand.einfuegungen.map(({ ergebnis, ...e }) => e),
+      }),
+    });
+    const daten = await antwort.json();
+    if (!antwort.ok) throw new Error(daten.fehler);
+    if (lauf !== zustand.laufend) return; // veraltet
+    zustand.version = daten.version;
+    zustand.treffer = daten.regeln.map((r) => r.treffer);
+    (daten.einfuegungen || []).forEach((r, i) => { if (zustand.einfuegungen[i]) zustand.einfuegungen[i].ergebnis = r; });
+    meldung("");
+  } catch (e) {
+    if (lauf === zustand.laufend) meldung(e.message || "Berechnung fehlgeschlagen.");
+  } finally {
+    if (lauf === zustand.laufend) {
+      status("");
+      wendeAnsichtAn();
+      for (const nr of zustand.woerter.keys()) zeichneEbene(nr);
+      zeichneListe();
+      aktualisiereSpeichern();
+    }
+  }
+}
+
+// ---------------------------------------------------------------- Liste
+
+function zeichneListe() {
+  const liste = $("#liste");
+  liste.replaceChildren();
+  if (!zustand.regeln.length && !zustand.einfuegungen.length) {
+    const li = document.createElement("li");
+    li.className = "leer-liste";
+    li.innerHTML = "<p>Noch keine Änderung.</p><p class='hinweis'>Text im PDF anklicken, <kbd>⇧</kbd>-Klick für mehrere Wörter. Mit „Kopieren“ fügst du Text im gleichen Stil an anderer Stelle ein.</p>";
+    liste.append(li);
+    return;
+  }
+  zustand.regeln.forEach((r, i) => {
+    const treffer = zustand.treffer[i] || [];
+    const li = document.createElement("li");
+    li.className = "regel" + (zustand.bearbeitet === i ? " aktiv" : "");
+    li.tabIndex = 0;
+    li.setAttribute("aria-label", `${r.alt} durch ${r.neu || "nichts"} ersetzen, bearbeiten`);
+
+    const alt = el("div", "alt", r.alt);
+    const weg = el("button", "knopf still weg", "×");
+    weg.type = "button";
+    weg.setAttribute("aria-label", `Änderung ${r.alt} entfernen`);
+    weg.addEventListener("click", (ev) => { ev.stopPropagation(); entferne(i); });
+    const neu = el("div", "neu" + (r.neu ? "" : " leer-text"), r.neu || "wird entfernt");
+    li.append(alt, weg, neu);
+
+    if (zustand.treffer.length) {
+      if (!treffer.length) li.append(el("div", "marke-fehler", "Nicht gefunden"));
+      else {
+        const seiten = [...new Set(treffer.map((t) => t.seite))];
+        const schrift = [...new Set(treffer.map((t) => SCHRIFT[t.schrift]).filter(Boolean))].join(", ");
+        const teile = [(r.stellen || []).length ? "nur diese Stelle" : `überall, ${treffer.length}×`,
+                       seiten.length === 1 ? `S. ${seiten[0]}` : `S. ${seiten.join(", ")}`];
+        if (schrift) teile.push(schrift);
+        li.append(el("div", "meta", teile.join(" · ")));
+        const notizen = [...new Set(treffer.flatMap((t) => t.notizen))];
+        for (const n of notizen) li.append(el("div", n.startsWith("WARNUNG") || n.startsWith("Ersatzschrift") ? "marke-warn" : "meta", n.replace(/^WARNUNG: /, "")));
+      }
+    }
+    li.addEventListener("click", () => springeZu(i));
+    li.addEventListener("keydown", (ev) => { if (ev.key === "Enter") springeZu(i); });
+    liste.append(li);
+  });
+  zeichneEinfuegungsliste(liste);
+}
+
+function el(tag, klasse, text) {
+  const e = document.createElement(tag);
+  e.className = klasse;
+  e.textContent = text;
+  return e;
+}
+
+function springeZu(i) {
+  const t = (zustand.treffer[i] || [])[0];
+  if (!t) return oeffneEditor(null, i);
+  const seite = document.querySelector(`.seite[data-seite="${t.seite}"]:not([hidden])`);
+  const info = zustand.dok.seiten[t.seite - 1];
+  const y = seite.offsetTop + (t.rect[1] / info.hoehe) * seite.clientHeight;
+  $("#blatt").scrollTo({ top: Math.max(0, y - 160), behavior: "smooth" });
+  schliesseEditor(false);
+  zustand.bearbeitet = i;
+  oeffneEditorAn(seite, i, t, info);
+}
+
+function oeffneEditorAn(seite, i, t, info) {
+  oeffneEditor(null, i);
+  seite.append(editor);
+  const x = (t.rect[0] / info.breite) * seite.clientWidth;
+  const unten = (t.rect[3] / info.hoehe) * seite.clientHeight;
+  editor.style.left = `${Math.max(8, Math.min(x, seite.clientWidth - editor.offsetWidth - 8))}px`;
+  editor.style.top = `${unten + 8}px`;
+  zeichneListe();
+}
+
+function entferne(i) {
+  zustand.regeln.splice(i, 1);
+  zustand.treffer.splice(i, 1);
+  schliesseEditor();
+  berechne();
+}
+
+function aktualisiereSpeichern() {
+  const s = $("#speichern");
+  const bereit = zustand.treffer.some((t) => t.length) || zustand.einfuegungen.some((e) => e.text.trim());
+  s.setAttribute("aria-disabled", String(!bereit));
+  s.href = bereit ? `/api/download?id=${zustand.dok.id}&v=${zustand.version}` : "#";
+}
+
+// ---------------------------------------------------------------- Regeldateien (Format wie CLI)
+
+function regelnAlsText() {
+  return zustand.regeln.map((r) => {
+    const teile = [`${r.alt} => ${r.neu}`];
+    if (r.ausrichtung !== "auto") teile.push(r.ausrichtung);
+    if ((r.stellen || []).length) teile.push(r.stellen.map(([s, x, y]) => `@${s}:${x.toFixed(1)}:${y.toFixed(1)}`).join(" "));
+    return teile.join(" | ");
+  }).join("\n") + "\n";
+}
+
+const STELLE = /^@(\d+):(-?[\d.]+):(-?[\d.]+)$/;
+function leseRegeln(text) {  // gleiches Format wie lies_regeln() in pdf_ersetzen.py
+  const neu = [];
+  for (const zeile of text.split(/\r?\n/)) {
+    if (!zeile.trim() || zeile.trim().startsWith("#") || !zeile.includes("=>")) continue;
+    const pos = zeile.indexOf("=>");
+    const alt = zeile.slice(0, pos);
+    let rest = zeile.slice(pos + 2);
+    let ausrichtung = "auto", stellen = [];
+    while (rest.includes("|")) {
+      const k = rest.lastIndexOf("|");
+      const zusatz = rest.slice(k + 1).trim();
+      const tokens = zusatz.split(/\s+/);
+      if (["links", "rechts", "auto"].includes(zusatz)) ausrichtung = zusatz;
+      else if (zusatz && tokens.every((t) => STELLE.test(t))) {
+        stellen = tokens.map((t) => { const m = t.match(STELLE); return [Number(m[1]), Number(m[2]), Number(m[3])]; }).concat(stellen);
+      } else break;
+      rest = rest.slice(0, k);
+    }
+    if (alt.trim()) neu.push({ alt: alt.trim(), neu: rest.trim(), ausrichtung, stellen });
+  }
+  return neu;
+}
+
+$("#exportieren").addEventListener("click", () => {
+  if (!zustand.regeln.length) return meldung("Keine Regeln zum Sichern.", "info");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([regelnAlsText()], { type: "text/plain;charset=utf-8" }));
+  a.download = "regeln.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+$("#laden").addEventListener("click", () => $("#datei-regeln").click());
+$("#datei-regeln").addEventListener("change", async (ev) => {
+  const datei = ev.target.files[0];
+  ev.target.value = "";
+  if (!datei) return;
+  const geladen = leseRegeln(await datei.text());
+  if (!geladen.length) return meldung("Keine gültigen Regeln in der Datei (Format: ALT => NEU).");
+  for (const r of geladen) {
+    const gleich = (x) => x.alt === r.alt && JSON.stringify(x.stellen || []) === JSON.stringify(r.stellen);
+    const i = zustand.regeln.findIndex(gleich);
+    if (i >= 0) zustand.regeln[i] = r; else zustand.regeln.push(r);
+  }
+  berechne();
+});
+
+// ---------------------------------------------------------------- Kopieren und Einfügen
+
+const RASTER = 4; // pt: so nah muss man an einer Zeile oder Kante sein, damit es einrastet
+
+function einfRect(ein) {
+  if (ein.ergebnis?.rect) return ein.ergebnis.rect;
+  const g = ein.stil.size;
+  const breite = ein.text.length * g * 0.52 * (ein.skalierung || 1);
+  const x0 = ein.ausrichtung === "rechts" ? ein.x - breite : ein.x;
+  return [x0, ein.y - g * 0.8, x0 + breite, ein.y + g * 0.22];
+}
+
+function zeichneAlles() {
+  for (const nr of zustand.woerter.keys()) zeichneEbene(nr);
+  zeichneListe();
+}
+
+async function kopiere(kontext, text) {
+  const anker = ankerFuer(kontext, text);
+  const box = auswahlRechteck(kontext);
+  const [x, y] = anker ? [anker[1], anker[2]] : [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
+  try {
+    const antwort = await fetch(`/api/stil?id=${zustand.dok.id}&nr=${kontext.seite}&x=${x}&y=${y}`);
+    const daten = await antwort.json();
+    if (!antwort.ok) throw new Error(daten.fehler);
+    zustand.zwischenablage = { text, stil: daten.stil, skalierung: daten.skalierung, ausrichtung: spaltenAusrichtung(kontext) };
+    schliesseEditor();
+    startePlatzieren();
+  } catch (e) {
+    meldung(e.message || "Stil konnte nicht gelesen werden.");
+  }
+}
+
+// Wie bestimme_ausrichtung() im Kern: enden andere Zeilen an derselben Kante, ist die Spalte rechtsbündig
+function spaltenAusrichtung(kontext) {
+  const linien = zustand.woerter.get(kontext.seite).linien;
+  const eigene = linien.find((l) => l.z === kontext.z);
+  if (!eigene) return "links";
+  const andere = linien.filter((l) => l !== eigene);
+  const rechts = andere.filter((l) => Math.abs(l.x1 - eigene.x1) < 1).length;
+  const links = andere.filter((l) => Math.abs(l.x0 - eigene.x0) < 1).length;
+  return rechts > links ? "rechts" : "links";
+}
+
+function startePlatzieren() {
+  if (!zustand.zwischenablage) return;
+  schliesseEditor();
+  if (zustand.ansicht === "original") { zustand.ansicht = "neu"; wendeAnsichtAn(); }
+  zustand.platzieren = true;
+  document.body.classList.add("platzieren");
+  $("#platzhinweis").hidden = false;
+}
+
+function beendePlatzieren() {
+  zustand.platzieren = false;
+  document.body.classList.remove("platzieren");
+  $("#platzhinweis").hidden = true;
+  document.querySelectorAll(".geist, .hilfslinie").forEach((g) => g.remove());
+}
+
+function pdfPunkt(ebene, ev) {
+  const r = ebene.getBoundingClientRect();
+  const info = zustand.dok.seiten[Number(ebene.dataset.seite) - 1];
+  return [((ev.clientX - r.left) / r.width) * info.breite, ((ev.clientY - r.top) / r.height) * info.hoehe];
+}
+
+// Einrasten: Grundlinien vorhandener Zeilen (auch eine Zeile weiter im typischen Abstand)
+// und linke bzw. rechte Kanten. Die nähere Kante bestimmt die Ausrichtung.
+function raste(nr, links, rechts, grundlinie, ohne, ausnahme = -1, bevorzugt = "links") {
+  const daten = zustand.woerter.get(nr);
+  const roh = { x: links, y: grundlinie, ausrichtung: "links", hx: null, hy: null };
+  if (ohne || !daten) return roh;
+  const linien = [...daten.linien];
+  zustand.einfuegungen.forEach((e, i) => {
+    if (i === ausnahme || e.seite !== nr || !e.ergebnis?.rect) return;
+    linien.push({ y: e.y, x0: e.ergebnis.rect[0], x1: e.ergebnis.rect[2] });
+  });
+  const ys = [...new Set(linien.map((l) => l.y))].sort((a, b) => a - b); // exakt, nicht gerundet
+  const abstaende = new Map();
+  for (let i = 1; i < ys.length; i++) {
+    const d = Math.round((ys[i] - ys[i - 1]) * 2) / 2;
+    if (d >= 6 && d <= 40) abstaende.set(d, (abstaende.get(d) || 0) + 1);
+  }
+  const abstand = [...abstaende.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const kandidatenY = ys.flatMap((y) => (abstand ? [y, y - abstand, y + abstand] : [y]));
+  const naechster = (werte, ziel) => werte.reduce((b, w) => (Math.abs(w - ziel) < Math.abs(b - ziel) ? w : b), Infinity);
+
+  const y = naechster(kandidatenY, grundlinie);
+  const xl = naechster(linien.map((l) => l.x0), links);
+  const xr = naechster(linien.map((l) => l.x1), rechts);
+  const ergebnis = { ...roh };
+  if (Math.abs(y - grundlinie) <= RASTER) { ergebnis.y = y; ergebnis.hy = y; }
+  const dl = Math.abs(xl - links), dr = Math.abs(xr - rechts);
+  if (Math.min(dl, dr) <= RASTER) {
+    // Beide Kanten in Reichweite: Ausrichtung der Vorlage gewinnt (Beträge bleiben rechtsbündig)
+    const rechtsGewinnt = dl <= RASTER && dr <= RASTER ? bevorzugt === "rechts" : dr < dl;
+    if (rechtsGewinnt) { ergebnis.x = xr; ergebnis.ausrichtung = "rechts"; ergebnis.hx = xr; }
+    else { ergebnis.x = xl; ergebnis.hx = xl; }
+  }
+  if (zustand.raster) {
+    const aufGitter = (w) => Math.round(w / GITTER) * GITTER;
+    if (ergebnis.hy === null && Math.abs(aufGitter(grundlinie) - grundlinie) <= RASTER / 2) {
+      ergebnis.y = ergebnis.hy = aufGitter(grundlinie);
+    }
+    if (ergebnis.hx === null) {
+      const kante = bevorzugt === "rechts" ? rechts : links;
+      if (Math.abs(aufGitter(kante) - kante) <= RASTER / 2) {
+        ergebnis.x = ergebnis.hx = aufGitter(kante);
+        ergebnis.ausrichtung = bevorzugt;
+      }
+    }
+  }
+  return ergebnis;
+}
+
+function zeigeGeist(ebene, ein, r) {
+  ebene.querySelectorAll(".geist, .hilfslinie").forEach((g) => g.remove());
+  const info = zustand.dok.seiten[Number(ebene.dataset.seite) - 1];
+  const geist = document.createElement("div");
+  geist.className = "geist";
+  geist.style.cssText = prozent(einfRect(ein), info);
+  ebene.append(geist);
+  if (r.hy !== null) {
+    const l = document.createElement("div");
+    l.className = "hilfslinie";
+    l.style.cssText = `left:0;right:0;height:1px;top:${(r.hy / info.hoehe) * 100}%`;
+    ebene.append(l);
+  }
+  if (r.hx !== null) {
+    const l = document.createElement("div");
+    l.className = "hilfslinie";
+    l.style.cssText = `top:0;bottom:0;width:1px;left:${(r.hx / info.breite) * 100}%`;
+    ebene.append(l);
+  }
+}
+
+function vorlaeufig(ev) {
+  const ebene = ev.target.closest('.seite[data-stand="neu"] .ebene');
+  if (!ebene) return null;
+  const [px, py] = pdfPunkt(ebene, ev);
+  const z = zustand.zwischenablage;
+  const ein = { seite: Number(ebene.dataset.seite), text: z.text, stil: z.stil, skalierung: z.skalierung, ausrichtung: "links" };
+  const breite = einfRect({ ...ein, x: 0, y: 0 })[2];
+  // Klickpunkt = Mitte der Schrifthöhe; daraus die Grundlinie
+  const r = raste(ein.seite, px, px + breite, py + z.stil.size * 0.3, ev.altKey, -1, z.ausrichtung);
+  Object.assign(ein, { x: r.x, y: r.y, ausrichtung: r.ausrichtung }); // bei "rechts" ist x die rechte Kante
+  return { ebene, ein, r };
+}
+
+$("#seiten").addEventListener("mousemove", (ev) => {
+  if (!zustand.platzieren) return;
+  const v = vorlaeufig(ev);
+  document.querySelectorAll(".geist, .hilfslinie").forEach((g) => { if (!v || g.parentElement !== v.ebene) g.remove(); });
+  if (v) zeigeGeist(v.ebene, v.ein, v.r);
+});
+
+function platziere(ev) {
+  const v = vorlaeufig(ev);
+  if (!v) return;
+  beendePlatzieren();
+  zustand.einfuegungen.push(v.ein);
+  zustand.aktiv = zustand.einfuegungen.length - 1;
+  zeichneAlles();
+  berechne();
+  oeffneEinfEditor(zustand.aktiv);
+}
+
+// Ziehen
+let ziehen = null;
+$("#seiten").addEventListener("pointerdown", (ev) => {
+  const box = ev.target.closest(".einfuegung");
+  if (!box || ev.button !== 0) return;
+  ev.preventDefault();
+  const i = Number(box.dataset.e);
+  const ein = zustand.einfuegungen[i];
+  box.setPointerCapture(ev.pointerId);
+  ziehen = { i, box, ebene: box.parentElement, start: pdfPunkt(box.parentElement, ev), rect: einfRect(ein), x: ein.x, y: ein.y, ausrichtung: ein.ausrichtung, bewegt: false };
+});
+$("#seiten").addEventListener("pointermove", (ev) => {
+  if (!ziehen) return;
+  const [px, py] = pdfPunkt(ziehen.ebene, ev);
+  const dx = px - ziehen.start[0], dy = py - ziehen.start[1];
+  if (!ziehen.bewegt && Math.hypot(dx, dy) < 1.5) return;
+  ziehen.bewegt = true;
+  ziehen.box.classList.add("zieht");
+  const [x0, , x1] = ziehen.rect;
+  const ein = zustand.einfuegungen[ziehen.i];
+  const r = raste(ein.seite, x0 + dx, x1 + dx, ziehen.y + dy, ev.altKey, ziehen.i, ziehen.ausrichtung);
+  const breite = x1 - x0;
+  const neuX0 = r.hx === null ? x0 + dx : (r.ausrichtung === "rechts" ? r.x - breite : r.x);
+  ziehen.ziel = { x0: neuX0, y: r.y, ausrichtung: r.hx === null ? ziehen.ausrichtung : r.ausrichtung };
+  const info = zustand.dok.seiten[ein.seite - 1];
+  const g = ein.stil.size;
+  ziehen.box.style.cssText = prozent([neuX0, r.y - g * 0.8, neuX0 + breite, r.y + g * 0.22], info);
+  zeigeHilfslinien(ziehen.ebene, r, info);
+});
+$("#seiten").addEventListener("pointerup", (ev) => {
+  if (!ziehen) return;
+  const { i, bewegt, ziel, rect } = ziehen;
+  ziehen.ebene.querySelectorAll(".hilfslinie").forEach((g) => g.remove());
+  ziehen = null;
+  zustand.aktiv = i;
+  if (!bewegt || !ziel) { zeichneAlles(); return oeffneEinfEditor(i); }
+  const ein = zustand.einfuegungen[i];
+  const breite = rect[2] - rect[0];
+  Object.assign(ein, { x: ziel.ausrichtung === "rechts" ? ziel.x0 + breite : ziel.x0, y: ziel.y, ausrichtung: ziel.ausrichtung });
+  if (ein.ergebnis?.rect) ein.ergebnis.rect = [ziel.x0, ziel.y - ein.stil.size * 0.8, ziel.x0 + breite, ziel.y + ein.stil.size * 0.22];
+  zeichneAlles();
+  berechne();
+});
+
+function zeigeHilfslinien(ebene, r, info) {
+  ebene.querySelectorAll(".hilfslinie").forEach((g) => g.remove());
+  for (const [wert, waagrecht] of [[r.hy, true], [r.hx, false]]) {
+    if (wert === null) continue;
+    const l = document.createElement("div");
+    l.className = "hilfslinie";
+    l.style.cssText = waagrecht
+      ? `left:0;right:0;height:1px;top:${(wert / info.hoehe) * 100}%`
+      : `top:0;bottom:0;width:1px;left:${(wert / info.breite) * 100}%`;
+    ebene.append(l);
+  }
+}
+
+let nachziehen;
+function verschiebeUm(i, dx, dy) {
+  const ein = zustand.einfuegungen[i];
+  ein.x += dx;
+  ein.y += dy;
+  if (ein.ergebnis?.rect) {
+    const [a, b, c, d] = ein.ergebnis.rect;
+    ein.ergebnis.rect = [a + dx, b + dy, c + dx, d + dy];
+  }
+  zeichneAlles();
+  clearTimeout(nachziehen);
+  nachziehen = setTimeout(berechne, 250);
+}
+
+function entferneEinfuegung(i) {
+  zustand.einfuegungen.splice(i, 1);
+  zustand.aktiv = null;
+  schliesseEditor();
+  berechne();
+}
+
+function oeffneEinfEditor(i) {
+  schliesseEditor(false);
+  const ein = zustand.einfuegungen[i];
+  zustand.aktiv = i;
+  editor = $("#einfueg-vorlage").content.firstElementChild.cloneNode(true);
+  editor.text.value = ein.text;
+  editor.ausrichtung.value = ein.ausrichtung;
+  const seite = document.querySelector(`.seite[data-seite="${ein.seite}"][data-stand="neu"]`);
+  const info = zustand.dok.seiten[ein.seite - 1];
+  const r = einfRect(ein);
+  seite.append(editor);
+  const links = (r[0] / info.breite) * seite.clientWidth;
+  const unten = (r[3] / info.hoehe) * seite.clientHeight;
+  editor.style.left = `${Math.max(8, Math.min(links, seite.clientWidth - editor.offsetWidth - 8))}px`;
+  editor.style.top = `${unten + 10}px`;
+  if (unten + editor.offsetHeight + 20 > seite.clientHeight) editor.style.top = `${Math.max(8, (r[1] / info.hoehe) * seite.clientHeight - editor.offsetHeight - 10)}px`;
+  editor.text.focus();
+  editor.text.select();
+  editor.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const neueAusrichtung = editor.ausrichtung.value;
+    if (neueAusrichtung !== ein.ausrichtung) {  // sichtbare Position halten, nur die Bezugskante wechseln
+      const rr = einfRect(ein);
+      ein.x = neueAusrichtung === "rechts" ? rr[2] : rr[0];
+      ein.ausrichtung = neueAusrichtung;
+    }
+    ein.text = editor.text.value;
+    ein.ergebnis = null;
+    if (!ein.text.trim()) return entferneEinfuegung(i);
+    schliesseEditor();
+    berechne();
+  });
+  editor.querySelector("[data-loeschen]").addEventListener("click", () => entferneEinfuegung(i));
+  editor.querySelector("[data-abbrechen]").addEventListener("click", () => schliesseEditor());
+  editor.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); schliesseEditor(); } });
+  zeichneAlles();
+}
+
+function zeichneEinfuegungsliste(liste) {
+  if (!zustand.einfuegungen.length) return;
+  liste.append(el("li", "gruppe", "Eingefügt"));
+  zustand.einfuegungen.forEach((ein, i) => {
+    const li = document.createElement("li");
+    li.className = "regel" + (zustand.aktiv === i ? " aktiv" : "");
+    li.tabIndex = 0;
+    li.setAttribute("aria-label", `Eingefügter Text ${ein.text}, bearbeiten`);
+    const text = el("div", "neu", ein.text || "leer");
+    const weg = el("button", "knopf still weg", "×");
+    weg.type = "button";
+    weg.setAttribute("aria-label", `Eingefügten Text ${ein.text} entfernen`);
+    weg.addEventListener("click", (ev) => { ev.stopPropagation(); entferneEinfuegung(i); });
+    const teile = [`S. ${ein.seite}`, ein.ausrichtung === "rechts" ? "rechtsbündig" : "linksbündig"];
+    if (ein.ergebnis?.schrift) teile.push(SCHRIFT[ein.ergebnis.schrift]);
+    li.append(text, weg, el("div", "meta", teile.join(" · ")));
+    for (const n of ein.ergebnis?.notizen || []) li.append(el("div", "marke-warn", n));
+    const oeffnen = () => {
+      const seite = document.querySelector(`.seite[data-seite="${ein.seite}"][data-stand="neu"]`);
+      const info = zustand.dok.seiten[ein.seite - 1];
+      $("#blatt").scrollTo({ top: Math.max(0, seite.offsetTop + (ein.y / info.hoehe) * seite.clientHeight - 160), behavior: "smooth" });
+      oeffneEinfEditor(i);
+    };
+    li.addEventListener("click", oeffnen);
+    li.addEventListener("keydown", (ev) => { if (ev.key === "Enter") oeffnen(); });
+    liste.append(li);
+  });
+}
+
+// ---------------------------------------------------------------- Allgemeines
+
+function status(text) { $("#status").textContent = text; }
+function meldung(text, art = "fehler") {
+  const m = $("#meldung");
+  m.hidden = !text;
+  m.textContent = text;
+  m.className = "meldung" + (art === "info" ? " info" : "");
+}
+
+$("#waehlen").addEventListener("click", () => $("#datei-pdf").click());
+$("#raster").addEventListener("click", () => schalteRaster());
+$("#raster").setAttribute("aria-pressed", String(zustand.raster));
+$("#andere").addEventListener("click", () => $("#datei-pdf").click());
+$("#datei-pdf").addEventListener("change", (ev) => { oeffne(ev.target.files[0]); ev.target.value = ""; });
+$("#neue-regel").addEventListener("click", () => { schliesseEditor(); oeffneEditor(null, null, ""); editor.alt.focus(); });
+$("#teilstring").addEventListener("change", () => zustand.regeln.length && berechne());
+$("#ansicht").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  zustand.ansicht = b.dataset.ansicht;
+  if (zustand.ansicht === "original") beendePlatzieren();
+  schliesseEditor();
+  wendeAnsichtAn();
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (!zustand.dok || ev.target.closest?.("input, select, textarea")) return;
+  if ((ev.metaKey || ev.ctrlKey) && ev.key === "v" && zustand.zwischenablage) {
+    ev.preventDefault();
+    return startePlatzieren();
+  }
+  if (ev.metaKey || ev.ctrlKey) return;
+  if (ev.key === "Escape" && zustand.platzieren) return beendePlatzieren();
+  if (zustand.aktiv !== null && !editor) {
+    const schritt = ev.shiftKey ? 5 : 0.5;
+    const d = { ArrowLeft: [-schritt, 0], ArrowRight: [schritt, 0], ArrowUp: [0, -schritt], ArrowDown: [0, schritt] }[ev.key];
+    if (d) { ev.preventDefault(); return verschiebeUm(zustand.aktiv, d[0], d[1]); }
+    if (ev.key === "Backspace" || ev.key === "Delete") { ev.preventDefault(); return entferneEinfuegung(zustand.aktiv); }
+    if (ev.key === "Enter") { ev.preventDefault(); return oeffneEinfEditor(zustand.aktiv); }
+    if (ev.key === "Escape") { zustand.aktiv = null; zeichneAlles(); return; }
+  }
+  if (ev.key === "r") return schalteRaster();
+  if (ev.key === "v") {  // schnell zwischen Original und Ergebnis wechseln
+    zustand.ansicht = zustand.ansicht === "neu" ? "original" : "neu";
+    schliesseEditor();
+    wendeAnsichtAn();
+  }
+  if (ev.key === "Escape") schliesseEditor();
+});
+
+let zieher = 0;
+window.addEventListener("dragenter", (ev) => { ev.preventDefault(); zieher++; document.body.classList.add("ziehen"); });
+window.addEventListener("dragleave", () => { if (--zieher <= 0) { zieher = 0; document.body.classList.remove("ziehen"); } });
+window.addEventListener("dragover", (ev) => ev.preventDefault());
+window.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  zieher = 0;
+  document.body.classList.remove("ziehen");
+  oeffne(ev.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>

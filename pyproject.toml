@@ -1,0 +1,36 @@
+[project]
+name = "pdf-ersetzen"
+version = "0.1.0"
+description = "Textstellen und Zahlen in PDFs ersetzen, ohne dass sich etwas verschiebt"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Timo Lühmann" }]
+requires-python = ">=3.11"
+dependencies = [
+    "pymupdf>=2.1",
+]
+keywords = ["pdf", "edit", "replace", "pymupdf"]
+classifiers = [
+    "Environment :: Web Environment",
+    "Natural Language :: German",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business",
+]
+
+[project.scripts]
+pdf-ersetzen = "pdf_ersetzen.kern:main"
+pdf-ersetzen-ui = "pdf_ersetzen.oberflaeche:main"
+
+[build-system]
+requires = ["uv_build>=0.11.17,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]

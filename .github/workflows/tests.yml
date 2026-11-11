@@ -1,0 +1,20 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Schriften (Liberation als Arial-Ersatz)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y fonts-liberation
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run pytest -q
