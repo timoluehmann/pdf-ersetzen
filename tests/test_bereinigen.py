@@ -60,7 +60,8 @@ def test_saubere_ausgabe_hat_keine_bearbeitungsspuren(vorbearbeitet, tmp_path):
     assert len(seite.get_links()) == 1
     assert not any(name.startswith("Annot") for _x, name, *_ in seite.get_xobjects())
     assert not any(a.startswith("PE") for a in aliase(aus))
-    assert [n for n in schriften(aus) if "Arial" in n] == schriften(vorbearbeitet)  # keine Schriftkopie dazu
+    # keine Schriftkopie dazu (Helvetica stammt aus der eingebrannten Annotation)
+    assert [n for n in schriften(aus) if n != "Helvetica"] == schriften(vorbearbeitet)
     assert "112,80 €" in text(aus) and "2.362,80 €" in text(aus) and "86,40" not in text(aus)
     assert "Zahlbar bis 30.11.2026" in seite.get_text()
 

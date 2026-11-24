@@ -8,6 +8,8 @@ import pymupdf
 import pytest
 
 from pdf_ersetzen import oberflaeche
+from pdf_ersetzen.kern import normiert
+import test_ersetzen
 from test_ersetzen import rechnung
 
 
@@ -137,11 +139,13 @@ def test_vorschau_nennt_erkannte_und_gesetzte_schrift(basis, sitzung):
     status, _, rumpf = anfrage(f"{basis}/api/vorschau?id={sitzung['id']}", json.dumps(regeln).encode())
     assert status == 200
     betrag, summe = (json.loads(rumpf)["regeln"][i]["treffer"][0] for i in (0, 1))
-    for t, erwartet in ((betrag, "Arial Regular"), (summe, "Arial Bold")):  # so benennt PyMuPDF sie
+    # so benennt PyMuPDF die eingebettete Schrift: "Arial Regular" bzw. "Liberation Sans Regular" (Linux)
+    namen = (pymupdf.Font(fontfile=test_ersetzen.ARIAL).name, pymupdf.Font(fontfile=test_ersetzen.ARIAL_FETT).name)
+    for t, erwartet in zip((betrag, summe), namen):
         assert t["schrift_pdf"] == erwartet
         assert t["schrift_neu"]
-        # Arial (macOS, Windows) gilt als dieselbe Schrift, Liberation Sans (Linux) nicht
-        assert t["schrift_ok"] is t["schrift_neu"].startswith("Arial")
+        # gleiche Schrift (Arial auf macOS/Windows, Liberation Sans auf Linux) gilt als passend
+        assert t["schrift_ok"] is (normiert(t["schrift_neu"]) == normiert(erwartet))
 
 
 def test_nur_dokumentangaben_aendern(basis, sitzung):

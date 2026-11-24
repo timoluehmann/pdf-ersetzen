@@ -581,6 +581,7 @@ class Schriften:
                     self.im_pdf.append(PdfSchrift(basisname(name), puffer or b"", font))
         self.zaehler = 0
         self.cache: dict[str, Schriftwahl] = {}
+        self.herkunft: dict[str, set[str]] = {}  # Alias der eingefügten Schrift -> ersetzte PDF-Schriften
 
     def pdf_name(self, span: dict) -> str:
         """Schriftname, wie er im PDF steht. MuPDF meldet je Span den internen Namen der
@@ -601,6 +602,11 @@ class Schriften:
         return ergebnis
 
     def waehle(self, span: dict, text: str) -> Schriftwahl:
+        wahl = self._waehle(span, text)
+        self.herkunft.setdefault(wahl.alias, set()).add(self.pdf_name(span))
+        return wahl
+
+    def _waehle(self, span: dict, text: str) -> Schriftwahl:
         name = self.pdf_name(span)
         puffer = next((s.puffer for s in self.im_pdf if s.puffer and s.basefont == name), None)
         if puffer:
@@ -1036,7 +1042,7 @@ def bearbeite(
             geaendert.append(nr)
     if vorschau and geaendert:
         erzeuge_vorschau(eingabe, doc, geaendert, vorschau)
-    meldungen = speichere(doc, ausgabe, sauber, metadaten, version)
+    meldungen = speichere(doc, ausgabe, sauber, metadaten, version, schriften.herkunft)
     if hinweise is not None:
         hinweise += meldungen
     nicht_gefunden = [r for r in regeln if not any(e.fund.regel is r for e in alle)]

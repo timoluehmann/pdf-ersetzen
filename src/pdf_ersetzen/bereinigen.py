@@ -393,7 +393,8 @@ def _grund(doc, seite, alias, kopie: dict | None, kandidaten: list[int]) -> str:
     return "weil sie sich nicht verlustfrei mit der Originalschrift zusammenführen lässt"
 
 
-def vereinheitliche_schriften(doc: pymupdf.Document) -> tuple[list[str], set[int]]:
+def vereinheitliche_schriften(doc: pymupdf.Document, herkunft: dict[str, set[str]] | None = None
+                              ) -> tuple[list[str], set[int]]:
     """Hängt eingefügten Text an die gleichnamige Originalschrift und entfernt die Kopie.
 
     1. Umkodieren auf Glyphen des Originals (Original bleibt unverändert, geprüft über Zeichen
@@ -418,7 +419,10 @@ def vereinheitliche_schriften(doc: pymupdf.Document) -> tuple[list[str], set[int
             if not EIGENER_ALIAS.fullmatch(alias):
                 continue
             kopie, name = _cid_schrift(doc, xref), _schriftname(doc, xref)
-            kandidaten = [ox for n, ox in originale if kopie and n == normiert(name)]
+            # gleicher Name zuerst, dann die Originalschrift, die der eingefügte Text ersetzt
+            ersetzt = {normiert(n) for n in (herkunft or {}).get(alias, ())}
+            kandidaten = [ox for n, ox in originale if kopie and n == normiert(name)] \
+                + [ox for n, ox in originale if kopie and n != normiert(name) and n in ersetzt]
             erledigt = False
             for weg in ("umkodieren", "programm"):
                 for ox in kandidaten:
@@ -534,9 +538,12 @@ def _bilder(doc: pymupdf.Document) -> list[bytes]:
 
 
 def speichere(doc: pymupdf.Document, ausgabe: Path, sauber: bool = True,
-              metadaten: dict[str, str] | None = None, version: str = "") -> list[str]:
+              metadaten: dict[str, str] | None = None, version: str = "",
+              herkunft: dict[str, set[str]] | None = None) -> list[str]:
     """Speichert das bearbeitete Dokument, mit `sauber` ohne Bearbeitungsspuren. `metadaten`
-    überschreibt Titel, Autor, Thema und Stichwörter, `version` (z. B. "1.6") bleibt im Kopf erhalten."""
+    überschreibt Titel, Autor, Thema und Stichwörter, `version` (z. B. "1.6") bleibt im Kopf
+    erhalten. `herkunft` sagt je eingefügter Schrift, welche
+    Originalschrift sie ersetzt (wichtig, wenn eine Ersatzschrift wie Liberation statt Arial kam)."""
     if not sauber:
         if metadaten:
             doc.set_metadata((doc.metadata or {}) | {k: v.strip() for k, v in metadaten.items() if k in METADATEN})
@@ -549,7 +556,7 @@ def speichere(doc: pymupdf.Document, ausgabe: Path, sauber: bool = True,
     for seite in doc:
         seite.clean_contents()  # ein Stream je Seite, einheitliche Schreibweise
     text = [_zeichen(s) for s in pymupdf.open("pdf", doc.tobytes())]  # neu geladen: inkl. eingebrannter Annotationen
-    hinweise, umkodiert = vereinheitliche_schriften(doc)
+    hinweise, umkodiert = vereinheitliche_schriften(doc, herkunft or {})
     _neutrale_xobjekte(doc)
     for seite in doc:
         entferne_leere_zustaende(seite)
