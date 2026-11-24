@@ -36,24 +36,29 @@ def _objekt(doc: pymupdf.Document, xref: int, key: str) -> str:
 
 
 def _cid_schrift(doc: pymupdf.Document, xref: int) -> dict | None:
-    """Type0/Identity-H mit TrueType-Nachfahre (Glyph-ID = CID) oder CFF-Nachfahre (OpenType,
-    z. B. Trade Gothic LT Std), sonst None. `cff` sagt, welches von beiden."""
+    """Type0/Identity-H als CID-Schrift. `prog` sagt das eingebettete Format: "truetype"
+    (CIDFontType2, FontFile2), "cff" (CIDFontType0, FontFile3, z. B. Trade Gothic LT Std) oder
+    "type1" (CIDFontType0, FontFile; so verpackt MuPDF eine Type-1-Schrift beim Einfügen). Sonst None."""
     if doc.xref_get_key(xref, "Subtype")[1] != "/Type0" or doc.xref_get_key(xref, "Encoding")[1] != "/Identity-H":
         return None
     nachfahre = _ref(re.sub(r"[\[\]]", "", doc.xref_get_key(xref, "DescendantFonts")[1]))
     art = doc.xref_get_key(nachfahre, "Subtype")[1] if nachfahre else ""
     if art not in ("/CIDFontType2", "/CIDFontType0"):
         return None
-    cff = art == "/CIDFontType0"
-    if not cff and doc.xref_get_key(nachfahre, "CIDToGIDMap")[1] not in ("null", "/Identity"):
+    if art == "/CIDFontType2" and doc.xref_get_key(nachfahre, "CIDToGIDMap")[1] not in ("null", "/Identity"):
         return None
-    deskriptor = _ref(doc.xref_get_key(nachfahre, "FontDescriptor")[1])
-    datei = _ref(doc.xref_get_key(deskriptor, "FontFile3" if cff else "FontFile2")[1]) if deskriptor else None
+    deskriptor = _ref(doc.xref_get_key(nachfahre, "FontDescriptor")[1]) if nachfahre else None
+    prog, datei = "truetype", None
+    if deskriptor:
+        for schluessel, p in (("FontFile2", "truetype"), ("FontFile3", "cff"), ("FontFile", "type1")):
+            if (datei := _ref(doc.xref_get_key(deskriptor, schluessel)[1])):
+                prog = p
+                break
     unicode = _ref(doc.xref_get_key(xref, "ToUnicode")[1])
     if not (datei and unicode):
         return None
     name = doc.xref_get_key(xref, "BaseFont")[1].lstrip("/")
-    return {"xref": xref, "nachfahre": nachfahre, "datei": datei, "unicode": unicode, "cff": cff,
+    return {"xref": xref, "nachfahre": nachfahre, "datei": datei, "unicode": unicode, "prog": prog,
             "name": re.sub(r"^[A-Z]{6}\+", "", name)}
 
 
@@ -318,7 +323,7 @@ def _verschmelze_cid(doc, seite, alias, kopie: dict, original: dict, ziel: str, 
     """Gleiche CID-Schrift: Original bekommt das (vollständigere) Schriftprogramm, die Breiten und
     Unicode-Zuordnung der Kopie dazu; der Text zeigt danach aufs Original. Nur TrueType: Bei CFF
     hängen die CIDs am charset des Programms, ein Tausch würde den Originaltext umnummerieren."""
-    if original["cff"] or kopie["cff"]:
+    if original["prog"] != "truetype" or kopie["prog"] != "truetype":
         return False
     s.merke(original["xref"], original["nachfahre"], original["unicode"], original["datei"])
     w = _lies_w(_objekt(doc, kopie["nachfahre"], "W"))
@@ -445,14 +450,16 @@ def _codes_im_original(doc: pymupdf.Document, xref: int) -> dict[str, tuple[byte
     Breite > 0 (Word und Co. schreiben Breiten nur für genutzte Zeichen)."""
     if (cid := _cid_schrift(doc, xref)):
         programm = doc.xref_stream(cid["datei"])
-        umrisse = _cff_glyphen_mit_umriss(programm) if cid["cff"] else _glyphen_mit_umriss(programm)
+        umrisse = {"cff": _cff_glyphen_mit_umriss, "truetype": _glyphen_mit_umriss}.get(cid["prog"], lambda _p: None)(programm)
         breiten = _lies_w(_objekt(doc, cid["nachfahre"], "W"))
         standard = float(doc.xref_get_key(cid["nachfahre"], "DW")[1]) if doc.xref_get_key(cid["nachfahre"], "DW")[0] != "null" else 1000.0
         tabelle: dict[str, tuple[bytes, float]] = {}
         for code, ziel in sorted(_lies_tounicode(doc.xref_stream(cid["unicode"])).items()):
             try:
                 zeichen = bytes.fromhex(ziel).decode("utf-16-be")
-                if umrisse is None or (code not in umrisse and not zeichen.isspace()):
+                # umrisse None = Format nicht prüfbar (Type1 oder Parser-Fehler): alles aufnehmen,
+                # das Render-Netz fängt unsichtbare Glyphen ab.
+                if umrisse is not None and code not in umrisse and not zeichen.isspace():
                     continue
                 tabelle.setdefault(zeichen, (code.to_bytes(2, "big"), float(breiten.get(code, standard))))
             except (ValueError, UnicodeError, OverflowError):

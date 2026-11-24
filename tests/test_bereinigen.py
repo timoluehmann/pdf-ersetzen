@@ -316,3 +316,148 @@ def test_glyphname_aufloesung():
     assert z("germandbls") == "ß" and z("adieresis") == "ä" and z("Euro") == "€"
     assert z("uni20AC") == "€" and z("uni00FC") == "ü"
     assert z("gibtsnicht") is None
+
+
+# ---- Echte Type-1-Schriften (PostScript, FontFile), ohne externe Werkzeuge erzeugt ----
+
+def _t1_num(n: int) -> bytes:
+    import struct
+    if -107 <= n <= 107:
+        return bytes([n + 139])
+    if 108 <= n <= 1131:
+        n -= 108
+        return bytes([(n >> 8) + 247, n & 0xFF])
+    if -1131 <= n <= -108:
+        n = -n - 108
+        return bytes([(n >> 8) + 251, n & 0xFF])
+    return b"\xff" + struct.pack(">i", n)
+
+
+def _t1_encrypt(data: bytes, r: int, skip: int) -> bytes:
+    out = bytearray()
+    for byte in bytes(skip) + data:
+        c = byte ^ (r >> 8)
+        out.append(c)
+        r = ((c + r) * 52845 + 22719) & 0xFFFF
+    return bytes(out)
+
+
+# WinAnsi-Byte -> Adobe-Glyphenname für die Zeichen der Testdaten
+_T1_ENC = {32: "space", 44: "comma", 46: "period"}
+_T1_ENC |= {ord(c): c for c in "SummeRiskotn"}
+_T1_ENC |= {48 + i: n for i, n in enumerate("zero one two three four five six seven eight nine".split())}
+
+
+def _type1_font(name: str, glyphen: dict[str, tuple[int, int]]) -> tuple[bytes, int, int, int]:
+    """Echte Type-1-Schrift (eexec-verschlüsselt). Jede Glyphe ein gefülltes Rechteck (Breite, Höhe)."""
+    HSBW, RLINETO, RMOVETO, CLOSEPATH, ENDCHAR = 13, 5, 21, 9, 14
+
+    def box(w, h):
+        x0, x1 = 60, max(120, w - 60)
+        return (_t1_num(0) + _t1_num(w) + bytes([HSBW]) + _t1_num(x0) + _t1_num(0) + bytes([RMOVETO])
+                + _t1_num(0) + _t1_num(h) + bytes([RLINETO]) + _t1_num(x1 - x0) + _t1_num(0) + bytes([RLINETO])
+                + _t1_num(0) + _t1_num(-h) + bytes([RLINETO]) + bytes([CLOSEPATH, ENDCHAR]))
+
+    klar = [f"%!PS-AdobeFont-1.0: {name} 001.000", "11 dict begin",
+            "/FontInfo 2 dict dup begin", f"/FullName ({name}) def", "end def",
+            f"/FontName /{name} def", "/PaintType 0 def /FontType 1 def",
+            "/FontMatrix [0.001 0 0 0.001 0 0] def", "/FontBBox {0 -200 1000 800} readonly def",
+            "/Encoding 256 array", "0 1 255 {1 index exch /.notdef put} for"]
+    for code, g in _T1_ENC.items():
+        if g in glyphen:
+            klar.append(f"dup {code} /{g} put")
+    klar += ["readonly def", "currentdict end", "currentfile eexec"]
+    klartext = ("\n".join(klar) + "\n").encode("latin-1")
+
+    alle = {".notdef": None, **glyphen}
+    priv = ["dup /Private 15 dict dup begin",
+            "/RD {string currentfile exch readstring pop} executeonly def",
+            "/ND {noaccess def} executeonly def", "/NP {noaccess put} executeonly def",
+            "/BlueValues [] def", "/MinFeature {16 16} ND", "/password 5839 def",
+            f"2 index /CharStrings {len(alle)} dict dup begin"]
+    teile = [("\n".join(priv) + "\n").encode("latin-1")]
+    for g, maße in alle.items():
+        cs = (_t1_num(0) + _t1_num(0) + bytes([HSBW, ENDCHAR])) if maße is None else box(*maße)
+        enc = _t1_encrypt(cs, 4330, 4)
+        teile.append(f"/{g} {len(enc)} RD ".encode("latin-1") + enc + b" ND\n")
+    teile.append(b"end end\nreadonly put\nnoaccess put\ndup/FontName get exch definefont pop\nmark currentfile closefile\n")
+    eexec = _t1_encrypt(b"".join(teile), 55665, 4)
+    trailer = (b"0" * 64 + b"\n") * 8 + b"cleartomark\n"
+    return klartext + eexec + trailer, len(klartext), len(eexec), len(trailer)
+
+
+def _type1_pdf(pfad: Path, zeilen: list[str]) -> Path:
+    """PDF mit einfacher Type-1-Schrift (FontFile, PostScript), wie alte Satzsysteme sie erzeugen."""
+    chars = set("".join(zeilen))
+    glyphen, breiten_pt = {}, {}
+    for c in sorted(chars):
+        if (name := _T1_ENC.get(ord(c))):
+            w = 300 if c in " ,." else 560
+            glyphen[name] = (w, 500 + (ord(c) % 5) * 40)
+            breiten_pt[c] = w
+    ff, l1, l2, l3 = _type1_font("ABCDEF+TestGothicStd", glyphen)
+    doc = pymupdf.open()
+    s = doc.new_page()
+    datei = doc.get_new_xref()
+    doc.update_object(datei, f"<</Length1 {l1}/Length2 {l2}/Length3 {l3}>>")
+    doc.update_stream(datei, ff)
+    desk = doc.get_new_xref()
+    doc.update_object(desk, f"<</Type/FontDescriptor/FontName/ABCDEF+TestGothicStd/Flags 4"
+                            f"/FontBBox[0 -200 1000 800]/ItalicAngle 0/Ascent 800/Descent -200"
+                            f"/StemV 80/FontFile {datei} 0 R>>")
+    breiten = [round(breiten_pt.get(bytes([c]).decode("latin-1"), 0)) for c in range(32, 256)]
+    schrift = doc.get_new_xref()
+    doc.update_object(schrift, f"<</Type/Font/Subtype/Type1/BaseFont/ABCDEF+TestGothicStd/FirstChar 32"
+                               f"/LastChar 255/Widths[{' '.join(map(str, breiten))}]/Encoding/WinAnsiEncoding"
+                               f"/FontDescriptor {desk} 0 R>>")
+    doc.xref_set_key(s.xref, "Resources", f"<</Font<</F1 {schrift} 0 R>>>>")
+    inhalt = b""
+    for i, z in enumerate(zeilen):
+        inhalt += b"BT /F1 11 Tf 70 %d Td (" % (720 - 20 * i) + z.encode("latin-1") + b") Tj ET\n"
+    strom = doc.get_new_xref()
+    doc.update_object(strom, "<<>>")
+    doc.update_stream(strom, inhalt)
+    doc.xref_set_key(s.xref, "Contents", f"{strom} 0 R")
+    doc.save(pfad)
+    return pfad
+
+
+def test_type1_pdf_ist_echte_type1_schrift(tmp_path):
+    pdf = _type1_pdf(tmp_path / "t1.pdf", ["Summe 100,00"])
+    zeile = [z for z in subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True).stdout.splitlines()
+             if "TestGothic" in z][0]
+    assert "Type 1 " in zeile and "Type 1C" not in zeile  # FontFile, nicht FontFile3
+    assert pymupdf.open(pdf)[0].get_text().strip() == "Summe 100,00"
+
+
+def test_type1_schrift_wird_wiederverwendet(tmp_path):
+    pdf = _type1_pdf(tmp_path / "t1.pdf", ["Summe 100,00", "Reisekosten 86,40"])
+    sauber, roh = tmp_path / "sauber.pdf", tmp_path / "roh.pdf"
+    regeln = [Regel("100,00", "110,00")]  # 1 und 0 stecken schon im Subset
+    hinweise: list[str] = []
+    bearbeite(pdf, roh, regeln, sauber=False)
+    bearbeite(pdf, sauber, regeln, hinweise=hinweise)
+    assert hinweise == []
+    assert len(schriften(sauber)) == 1  # keine zweite Schrift
+    assert "Summe 110,00" in text(sauber)
+    a, b = (pymupdf.open(p)[0] for p in (roh, sauber))
+    assert bereinigen._glyphen_gleich(a, b)  # pixelgleich zur unbereinigten Fassung
+
+
+def test_type1_fehlende_zeichen_bleiben_ersatzschrift(tmp_path):
+    pdf = _type1_pdf(tmp_path / "t1.pdf", ["Summe 100,00"])
+    aus = tmp_path / "aus.pdf"
+    hinweise: list[str] = []
+    bearbeite(pdf, aus, [Regel("100,00", "987,65")], hinweise=hinweise)  # 9 8 7 5 fehlen im Subset
+    assert len(hinweise) == 1 and "bleibt zusätzlich" in hinweise[0]
+    assert "Summe 987,65" in text(aus)
+
+
+def test_cid_type1_kopie_wird_erkannt(tmp_path):
+    """Die beim Einfügen entstehende Kopie ist CIDFontType0 mit FontFile (Type 1), nicht FontFile3."""
+    pdf = _type1_pdf(tmp_path / "t1.pdf", ["Summe 100,00"])
+    roh = tmp_path / "roh.pdf"
+    bearbeite(pdf, roh, [Regel("100,00", "110,00")], sauber=False)
+    doc = pymupdf.open(roh)
+    kopien = [bereinigen._cid_schrift(doc, e[0]) for e in doc[0].get_fonts(full=True) if e[4].startswith("PE")]
+    assert kopien and all(k and k["prog"] == "type1" for k in kopien)
