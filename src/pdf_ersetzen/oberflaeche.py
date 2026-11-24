@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import pymupdf
 
-from .kern import Einfuegung, Regel, Schriften, bearbeite, norm, stil_an, zeilen_der_seite
+from .kern import Einfuegung, Regel, Schriften, bearbeite, norm, schrift_passt, stil_an, zeilen_der_seite
 
 STATISCH = Path(__file__).parent / "ui"
 MAX_GROESSE = 100 * 1024 * 1024
@@ -114,6 +114,9 @@ def vorschau(s: Sitzung, daten: dict) -> dict:
                     "rect": list(e.fund.neu_rect or e.fund.rect),
                     "ausrichtung": e.fund.ausrichtung,
                     "schrift": e.schrift,
+                    "schrift_pdf": e.schrift_pdf,
+                    "schrift_neu": e.schrift_neu,
+                    "schrift_ok": e.schrift == "-" or schrift_passt(e.schrift_pdf, e.schrift_neu, e.schrift),
                     "stauchung": round(e.stauchung, 3),
                     "notizen": e.fund.notizen,
                 }
@@ -121,7 +124,9 @@ def vorschau(s: Sitzung, daten: dict) -> dict:
             ]
         })
     eingefuegt = [
-        {"rect": list(e.rect) if e.rect else None, "schrift": e.schrift, "notizen": e.notizen}
+        {"rect": list(e.rect) if e.rect else None, "schrift": e.schrift, "notizen": e.notizen,
+         "schrift_pdf": e.schrift_pdf, "schrift_neu": e.schrift_neu,
+         "schrift_ok": not e.schrift or schrift_passt(e.schrift_pdf, e.schrift_neu, e.schrift)}
         for e in einfuegungen
     ]
     return {"version": s.version, "regeln": proregel, "einfuegungen": eingefuegt, "korrekturen": korrekturen}

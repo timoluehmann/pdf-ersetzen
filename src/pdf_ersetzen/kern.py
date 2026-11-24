@@ -547,6 +547,7 @@ class Schriftwahl:
     quelle: str  # original | system | ersatz
     puffer: bytes | None = None
     base14: str | None = None
+    name: str = ""  # PostScript-Name der gesetzten Schrift, zum Vergleich mit dem PDF-Namen
 
 
 @dataclass
@@ -604,7 +605,7 @@ class Schriften:
             try:
                 font = pymupdf.Font(fontbuffer=puffer)
                 if deckt_ab(font, text):
-                    return self._neu("orig:" + name, font, "original", puffer=puffer)
+                    return self._neu("orig:" + name, font, "original", puffer=puffer, name=name)
             except Exception:
                 pass
         gefunden = systemschrift(name) or systemschrift(span["font"])
@@ -612,13 +613,15 @@ class Schriften:
             schluessel, puffer = gefunden
             font = pymupdf.Font(fontbuffer=puffer)
             if deckt_ab(font, text):
-                return self._neu("sys:" + schluessel, font, "system", puffer=puffer)
+                psname = None if "#" in schluessel else postscript_name(Path(schluessel))
+                return self._neu("sys:" + schluessel, font, "system", puffer=puffer, name=psname or font.name)
         return self._ersatz(span, name, text)
 
-    def _neu(self, schluessel, font, quelle, puffer=None, base14=None) -> Schriftwahl:
+    def _neu(self, schluessel, font, quelle, puffer=None, base14=None, name=None) -> Schriftwahl:
         if schluessel not in self.cache:
             self.zaehler += 1
-            self.cache[schluessel] = Schriftwahl(font, f"PE{self.zaehler}", quelle, puffer, base14)
+            self.cache[schluessel] = Schriftwahl(font, f"PE{self.zaehler}", quelle, puffer, base14,
+                                                 name or font.name)
         return self.cache[schluessel]
 
     def _ersatz(self, span: dict, name: str, text: str) -> Schriftwahl:
@@ -658,6 +661,8 @@ class Ergebnis:
     fund: Fundstelle
     schrift: str
     stauchung: float
+    schrift_pdf: str = ""  # erkannte Schrift (Name im PDF)
+    schrift_neu: str = ""  # gesetzte Schrift
 
 
 def farbe(span: dict) -> tuple[float, float, float]:
@@ -683,6 +688,11 @@ def kalibrierung(zeichen: list[Zeichen], font: pymupdf.Font, groesse: float) -> 
     if soll <= 0:
         return 1.0
     return min(max(ist / soll, 0.7), 1.3)
+
+
+def schrift_passt(pdf_name: str, neu_name: str, quelle: str) -> bool:
+    """Gesetzte Schrift ist dieselbe wie die erkannte (Namen normiert verglichen)."""
+    return quelle in ("original", "system") and normiert(pdf_name) == normiert(neu_name)
 
 
 def bette_ein(seite: pymupdf.Page, wahl: Schriftwahl, eingefuegt: set[str]) -> None:
@@ -781,7 +791,7 @@ def ersetze_seite(seite: pymupdf.Page, funde: list[Fundstelle], schriften: Schri
     ergebnisse = []
     for f, wahl, k, alte_breite in plaene:
         if not f.ersatz.strip():
-            ergebnisse += [Ergebnis(g, "-", 1.0) for g in [f, *f.mit]]
+            ergebnisse += [Ergebnis(g, "-", 1.0, schriften.pdf_name(f.span)) for g in [f, *f.mit]]
             continue
         span, groesse = f.span, f.span["size"]
         bette_ein(seite, wahl, eingefuegt)
@@ -810,7 +820,8 @@ def ersetze_seite(seite: pymupdf.Page, funde: list[Fundstelle], schriften: Schri
             f.notizen.append(f"Ersatzschrift {wahl.font.name} statt {basisname(span['font'])}")
         if wahl.base14 and any(ord(c) > 255 for c in f.ersatz):
             f.notizen.append("WARNUNG: Standardschrift ohne Unicode, Sonderzeichen wie € fehlen")
-        ergebnisse += [Ergebnis(g, wahl.quelle, sx / k) for g in [f, *f.mit]]
+        ergebnisse += [Ergebnis(g, wahl.quelle, sx / k, schriften.pdf_name(span), wahl.name)
+                       for g in [f, *f.mit]]
     return ergebnisse, korrigiert
 
 
@@ -831,6 +842,8 @@ class Einfuegung:
     # Ergebnis nach dem Einfügen
     rect: pymupdf.Rect | None = None
     schrift: str = ""
+    schrift_pdf: str = ""
+    schrift_neu: str = ""
     notizen: list[str] = field(default_factory=list)
 
 
@@ -884,6 +897,7 @@ def fuege_ein(seite: pymupdf.Page, einfuegungen: list[Einfuegung], schriften: Sc
         )
         e.rect = pymupdf.Rect(x0, e.y - groesse * 0.8, x0 + breite, e.y + groesse * 0.22)
         e.schrift = wahl.quelle
+        e.schrift_pdf, e.schrift_neu = schriften.pdf_name(e.stil), wahl.name
         if wahl.quelle == "ersatz":
             e.notizen.append(f"Ersatzschrift {wahl.font.name} statt {basisname(e.stil['font'])}")
 
@@ -980,7 +994,8 @@ def main(argv: list[str] | None = None) -> int:
     for e in ergebnisse:
         f = e.fund
         zusatz = f"; {'; '.join(f.notizen)}" if f.notizen else ""
-        print(f"S. {f.seite}: {f.regel.alt!r} → {f.regel.neu!r}  [{f.ausrichtung}, Schrift: {e.schrift}{zusatz}]")
+        schrift = f"{e.schrift_pdf} → {e.schrift_neu} ({e.schrift})" if e.schrift_neu else e.schrift
+        print(f"S. {f.seite}: {f.regel.alt!r} → {f.regel.neu!r}  [{f.ausrichtung}, Schrift: {schrift}{zusatz}]")
     for nr, anzahl in korrekturen.items():
         print(f"S. {nr}: {anzahl} Nachbarzeichen, die MuPDF verschoben hatte, auf Originalposition zurückgesetzt")
     for r in fehlend:

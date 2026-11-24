@@ -127,3 +127,15 @@ def test_stil_und_einfuegen(basis, sitzung):
     assert "Neue Position" in oberflaeche.norm(pymupdf.open("pdf", pdf)[0].get_text())
 
     assert anfrage(f"{basis}/api/stil?id={sid}&nr=1&x=5&y=5")[0] == 404  # leere Ecke
+
+
+def test_vorschau_nennt_erkannte_und_gesetzte_schrift(basis, sitzung):
+    regeln = {"regeln": [{"alt": "86,40 €", "neu": "112,80 €"}, {"alt": "2.336,40 €", "neu": "9.999,99 €"}]}
+    status, _, rumpf = anfrage(f"{basis}/api/vorschau?id={sitzung['id']}", json.dumps(regeln).encode())
+    assert status == 200
+    betrag, summe = (json.loads(rumpf)["regeln"][i]["treffer"][0] for i in (0, 1))
+    for t, erwartet in ((betrag, "Arial Regular"), (summe, "Arial Bold")):  # so benennt PyMuPDF sie
+        assert t["schrift_pdf"] == erwartet
+        assert t["schrift_neu"]
+        # Arial (macOS, Windows) gilt als dieselbe Schrift, Liberation Sans (Linux) nicht
+        assert t["schrift_ok"] is t["schrift_neu"].startswith("Arial")

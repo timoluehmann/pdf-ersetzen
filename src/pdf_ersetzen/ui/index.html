@@ -206,6 +206,9 @@ kbd { font-family: var(--schrift-mono); font-size: 11px; padding: 0 4px; border:
 .regel .neu { font-weight: 600; overflow-wrap: anywhere; }
 .regel .neu.leer-text { color: var(--text-3); font-weight: 400; font-style: italic; }
 .regel .meta { grid-column: 1 / -1; font-size: var(--t-klein); color: var(--text-3); }
+.schriftwahl { grid-column: 1 / -1; font-size: var(--t-klein); color: var(--text-2); overflow-wrap: anywhere; }
+.schriftwahl.marke-warn { color: var(--warn); }
+.schriftwahl code { font-family: var(--schrift-mono); font-size: 11px; }
 .regel .weg { width: 28px; min-height: 28px; padding: 0; align-self: start; }
 .marke-warn, .marke-fehler {
   grid-column: 1 / -1; font-size: var(--t-klein); padding: var(--s-1) var(--s-2); border-radius: 4px;
@@ -761,12 +764,11 @@ function zeichneListe() {
       if (!treffer.length) li.append(el("div", "marke-fehler", "Nicht gefunden"));
       else {
         const seiten = [...new Set(treffer.map((t) => t.seite))];
-        const schrift = [...new Set(treffer.map((t) => SCHRIFT[t.schrift]).filter(Boolean))].join(", ");
         const teile = [(r.stellen || []).length ? "nur diese Stelle" : `überall, ${treffer.length}×`,
                        seiten.length === 1 ? `S. ${seiten[0]}` : `S. ${seiten.join(", ")}`];
-        if (schrift) teile.push(schrift);
         li.append(el("div", "meta", teile.join(" · ")));
-        const notizen = [...new Set(treffer.flatMap((t) => t.notizen))];
+        li.append(...schriftZeilen(treffer));
+        const notizen = [...new Set(treffer.flatMap((t) => t.notizen))].filter((n) => !n.startsWith("Ersatzschrift"));
         for (const n of notizen) li.append(el("div", n.startsWith("WARNUNG") || n.startsWith("Ersatzschrift") ? "marke-warn" : "meta", n.replace(/^WARNUNG: /, "")));
       }
     }
@@ -775,6 +777,24 @@ function zeichneListe() {
     liste.append(li);
   });
   zeichneEinfuegungsliste(liste);
+}
+
+// Erkannte und gesetzte Schrift je Treffer, gleiche Paare zusammengefasst.
+// Gelb, wenn nicht dieselbe Schrift gesetzt wird (Ersatzschrift oder anderer Schnitt).
+function schriftZeilen(treffer) {
+  const paare = new Map();
+  for (const t of treffer) {
+    if (!t.schrift_neu) continue;
+    paare.set(`${t.schrift_pdf}|${t.schrift_neu}|${t.schrift}`, t);
+  }
+  return [...paare.values()].map((t) => {
+    const zeile = el("div", "schriftwahl" + (t.schrift_ok ? "" : " marke-warn"), "");
+    zeile.title = t.schrift_ok ? "Gleiche Schrift wie im PDF" : "Andere Schrift als im PDF";
+    const vorher = el("code", "", t.schrift_pdf);
+    const nachher = el("code", "", t.schrift_neu);
+    zeile.append(vorher, " → ", nachher, ` · ${SCHRIFT[t.schrift] || t.schrift}`);
+    return zeile;
+  });
 }
 
 function el(tag, klasse, text) {
@@ -1175,9 +1195,9 @@ function zeichneEinfuegungsliste(liste) {
     weg.setAttribute("aria-label", `Eingefügten Text ${ein.text} entfernen`);
     weg.addEventListener("click", (ev) => { ev.stopPropagation(); entferneEinfuegung(i); });
     const teile = [`S. ${ein.seite}`, ein.ausrichtung === "rechts" ? "rechtsbündig" : "linksbündig"];
-    if (ein.ergebnis?.schrift) teile.push(SCHRIFT[ein.ergebnis.schrift]);
     li.append(text, weg, el("div", "meta", teile.join(" · ")));
-    for (const n of ein.ergebnis?.notizen || []) li.append(el("div", "marke-warn", n));
+    if (ein.ergebnis) li.append(...schriftZeilen([ein.ergebnis]));
+    for (const n of (ein.ergebnis?.notizen || []).filter((n) => !n.startsWith("Ersatzschrift"))) li.append(el("div", "marke-warn", n));
     const oeffnen = () => {
       const seite = document.querySelector(`.seite[data-seite="${ein.seite}"][data-stand="neu"]`);
       const info = zustand.dok.seiten[ein.seite - 1];
