@@ -222,6 +222,17 @@ kbd { font-family: var(--schrift-mono); font-size: 11px; padding: 0 4px; border:
 .schalter { display: flex; gap: var(--s-2); align-items: center; color: var(--text-2); font-size: var(--t-klein); cursor: pointer; }
 .meldung { margin: 0 var(--s-4) var(--s-3); padding: var(--s-2) var(--s-3); border-radius: var(--r-1); background: var(--fehler-weich); color: var(--fehler); font-size: var(--t-klein); }
 .meldung.info { background: var(--warn-weich); color: var(--warn); }
+.angaben summary {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-2);
+  min-height: 34px; cursor: pointer; list-style: none; font-weight: 600;
+}
+.angaben summary::-webkit-details-marker { display: none; }
+.angaben summary::after { content: "›"; color: var(--text-3); transition: transform var(--dauer); }
+.angaben[open] summary::after { transform: rotate(90deg); }
+.angaben .zustand { margin-left: auto; font-size: var(--t-klein); font-weight: 400; color: var(--text-3); }
+.angaben .zustand.geaendert { color: var(--akzent); font-weight: 550; }
+.angaben .felder { display: grid; gap: var(--s-2); padding-top: var(--s-2); }
+.angaben .unten { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); min-height: 34px; }
 
 @media (max-width: 900px) {
   .arbeit { grid-template-columns: 1fr; height: auto; }
@@ -277,6 +288,19 @@ kbd { font-family: var(--schrift-mono); font-size: 11px; padding: 0 4px; border:
     <p class="meldung" id="meldung" role="alert" hidden></p>
     <ul class="liste" id="liste"></ul>
     <div class="fuss">
+      <details class="angaben" id="angaben">
+        <summary>Dokumentangaben <span class="zustand" id="angaben-zustand">wie im Original</span></summary>
+        <div class="felder">
+          <label class="feld"><span>Titel</span><input data-meta="title"></label>
+          <label class="feld"><span>Autor</span><input data-meta="author"></label>
+          <label class="feld"><span>Thema</span><input data-meta="subject"></label>
+          <label class="feld"><span>Stichwörter</span><input data-meta="keywords"></label>
+          <div class="unten">
+            <p class="hinweis">Datum wird entfernt</p>
+            <button class="knopf still" id="angaben-zurueck" type="button" hidden>Zurücksetzen</button>
+          </div>
+        </div>
+      </details>
       <label class="schalter"><input type="checkbox" id="teilstring"> Auch innerhalb von Wörtern und Zahlen</label>
       <div class="reihe">
         <button class="knopf" id="laden" type="button">Regeln laden</button>
@@ -399,6 +423,7 @@ async function oeffne(datei) {
     const daten = await antwort.json();
     if (!antwort.ok) throw new Error(daten.fehler);
     zustand.dok = daten;
+    zustand.meta = { ...daten.metadaten };
     zustand.regeln = [];
     zustand.treffer = [];
     zustand.einfuegungen = [];
@@ -432,6 +457,7 @@ function zeigeArbeit() {
   meldung("");
   baueSeiten();
   zeichneListe();
+  zeigeAngaben();
   aktualisiereSpeichern();
 }
 
@@ -710,6 +736,7 @@ async function berechne() {
       body: JSON.stringify({
         regeln: zustand.regeln,
         teilstring: $("#teilstring").checked,
+        metadaten: zustand.meta,
         einfuegungen: zustand.einfuegungen.map(({ ergebnis, ...e }) => e),
       }),
     });
@@ -719,7 +746,7 @@ async function berechne() {
     zustand.version = daten.version;
     zustand.treffer = daten.regeln.map((r) => r.treffer);
     (daten.einfuegungen || []).forEach((r, i) => { if (zustand.einfuegungen[i]) zustand.einfuegungen[i].ergebnis = r; });
-    meldung("");
+    meldung((daten.hinweise || []).join(" "), "info");
   } catch (e) {
     if (lauf === zustand.laufend) meldung(e.message || "Berechnung fehlgeschlagen.");
   } finally {
@@ -833,9 +860,44 @@ function entferne(i) {
   berechne();
 }
 
+function angabenGeaendert() {
+  const original = zustand.dok?.metadaten || {};
+  return Object.keys(original).some((k) => (zustand.meta[k] || "").trim() !== original[k]);
+}
+
+function zeigeAngaben() {
+  for (const feld of document.querySelectorAll("[data-meta]")) feld.value = zustand.meta[feld.dataset.meta] || "";
+  markiereAngaben();
+}
+
+function markiereAngaben() {
+  const geaendert = angabenGeaendert();
+  const z = $("#angaben-zustand");
+  z.textContent = geaendert ? "geändert" : "wie im Original";
+  z.classList.toggle("geaendert", geaendert);
+  $("#angaben-zurueck").hidden = !geaendert;
+}
+
+let angabenTimer = 0;
+for (const feld of document.querySelectorAll("[data-meta]")) {
+  feld.addEventListener("input", () => {
+    zustand.meta[feld.dataset.meta] = feld.value;
+    markiereAngaben();
+    aktualisiereSpeichern();
+    clearTimeout(angabenTimer);
+    angabenTimer = setTimeout(berechne, 400);
+  });
+}
+$("#angaben-zurueck").addEventListener("click", () => {
+  zustand.meta = { ...zustand.dok.metadaten };
+  zeigeAngaben();
+  berechne();
+});
+
 function aktualisiereSpeichern() {
   const s = $("#speichern");
-  const bereit = zustand.treffer.some((t) => t.length) || zustand.einfuegungen.some((e) => e.text.trim());
+  const bereit = zustand.treffer.some((t) => t.length) || zustand.einfuegungen.some((e) => e.text.trim())
+    || angabenGeaendert();
   s.setAttribute("aria-disabled", String(!bereit));
   s.href = bereit ? `/api/download?id=${zustand.dok.id}&v=${zustand.version}` : "#";
 }

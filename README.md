@@ -89,9 +89,36 @@ haben Vorrang vor Regeln für alle Vorkommen.
   wird deshalb jedes Zeichen der Seite gegen seine Originalposition geprüft und bei Bedarf exakt
   zurückgesetzt.
 
+## Saubere Ausgabe
+
+Das Ergebnis soll aussehen wie in einem Zug erzeugt, auch wenn das PDF vorher schon mit anderen
+Werkzeugen bearbeitet wurde. Standardmäßig, abschaltbar mit `--ohne-bereinigung`:
+
+- **Eine Fassung:** Die Datei wird komplett neu geschrieben. Frühere Revisionen (Incremental
+  Updates), aus denen sich alte Stände wiederherstellen ließen, fallen weg.
+- **Metadaten:** Titel, Autor, Thema und Stichwörter bleiben oder werden überschrieben (Oberfläche:
+  „Dokumentangaben“ in der Seitenleiste, vorausgefüllt mit den aktuellen Werten; Kommandozeile:
+  `--titel`, `--autor`, `--thema`, `--stichwoerter`, `""` leert ein Feld). Erstellungs- und
+  Änderungsdatum, Erzeuger, Bearbeitungsprogramm, XMP-Historie und Bearbeitungsvermerke fallen
+  weg. Beide Hälften der Dokument-ID sind gleich, Dateikopf und PDF-Version wie im Original,
+  ohne Hinweis auf die verwendete Bibliothek.
+- **Seiteninhalt:** ein Content-Stream je Seite in einheitlicher Schreibweise, ohne leere Reste.
+  Annotationen aus Editoren (Textfelder, Stempel) werden fester Seiteninhalt. Links und
+  Formularfelder bleiben.
+- **Schriften:** Neuer Text nutzt die eingebettete Originalschrift statt einer zweiten Kopie.
+  Zuerst wird er auf die Glyphen umgeschrieben, die im Original schon vorhanden sind, gerundete
+  Breiten gleicht Kerning aus. Fehlt ein Zeichen im Original-Subset und ist es dieselbe
+  Schriftdatei, übernimmt das Original das vollständige Schriftprogramm. Geht beides nicht, bleibt
+  die Kopie unter neutralem Namen im PDF und es gibt einen Hinweis, welches Zeichen fehlt.
+- **Sicherung:** Jeder Schritt wird gerendert und verglichen (Zeichen, Position, Tinte je
+  Zeichen, wo das Schriftprogramm wechselt pixelgenau). Weicht etwas ab, wird er zurückgenommen;
+  im Zweifel wird ohne Bereinigung gespeichert und das gemeldet.
+
 ## Grenzen
 
 - Kein Neuumbruch über Zeilen hinweg. Gedacht für einzelne Werte und kurze Textstellen.
+- Die Bereinigung entfernt Bearbeitungsspuren, keine fremden Inhalte: Was ein anderes Werkzeug
+  vorher sichtbar ins PDF geschrieben hat (z. B. Text in einer Ersatzschrift), bleibt sichtbar.
 - Gescannte PDFs (Bilder ohne Textebene) gehen nicht.
 - Eingebettete Teilschriften ohne Unicode-Tabelle (häufig bei Word und Chrome) lassen sich nicht
   wiederverwenden. Ist die Schrift nicht installiert, kommt eine Ersatzschrift, das wird angezeigt.

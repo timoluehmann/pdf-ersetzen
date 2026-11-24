@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import pymupdf
 
+from .bereinigen import METADATEN, lies_metadaten
 from .kern import Einfuegung, Regel, Schriften, bearbeite, norm, schrift_passt, stil_an, zeilen_der_seite
 
 STATISCH = Path(__file__).parent / "ui"
@@ -36,6 +37,8 @@ class Sitzung:
         self.original = self.ordner / "original.pdf"
         self.original.write_bytes(daten)
         self.ergebnis: Path | None = None
+        with pymupdf.open(self.original) as doc:
+            self.metadaten = lies_metadaten(doc)
         self.version = 0
         self.sperre = threading.Lock()
 
@@ -92,14 +95,19 @@ def vorschau(s: Sitzung, daten: dict) -> dict:
                    float(e.get("skalierung", 1.0)), e.get("ausrichtung", "links"))
         for e in daten.get("einfuegungen", [])
     ]
+    metadaten = s.metadaten | {k: str(v) for k, v in (daten.get("metadaten") or {}).items() if k in METADATEN}
+    metadaten = {k: v.strip() for k, v in metadaten.items()}
+    angaben_geaendert = metadaten != s.metadaten
     with s.sperre:
-        if not regeln and not any(e.text.strip() for e in einfuegungen):
+        if not regeln and not any(e.text.strip() for e in einfuegungen) and not angaben_geaendert:
             s.ergebnis = None
             s.version += 1
             return {"version": s.version, "regeln": [], "einfuegungen": [{} for _ in einfuegungen], "korrekturen": {}}
         ziel = s.ordner / f"ergebnis_{s.version + 1}.pdf"
+        hinweise: list[str] = []
         ergebnisse, _, korrekturen = bearbeite(s.original, ziel, regeln, bool(daten.get("teilstring")),
-                                               einfuegungen=einfuegungen)
+                                               einfuegungen=einfuegungen, hinweise=hinweise,
+                                               metadaten=metadaten if angaben_geaendert else None)
         if s.ergebnis and s.ergebnis.exists():
             s.ergebnis.unlink()
         s.ergebnis = ziel
@@ -129,7 +137,8 @@ def vorschau(s: Sitzung, daten: dict) -> dict:
          "schrift_ok": not e.schrift or schrift_passt(e.schrift_pdf, e.schrift_neu, e.schrift)}
         for e in einfuegungen
     ]
-    return {"version": s.version, "regeln": proregel, "einfuegungen": eingefuegt, "korrekturen": korrekturen}
+    return {"version": s.version, "regeln": proregel, "einfuegungen": eingefuegt, "korrekturen": korrekturen,
+            "hinweise": hinweise}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -240,7 +249,8 @@ class Handler(BaseHTTPRequestHandler):
             SITZUNGEN.clear()
             sid = secrets.token_urlsafe(12)
             s = SITZUNGEN[sid] = Sitzung(name, rumpf)
-            return self.json({"id": sid, "name": name, "seiten": seiten_info(s.original), "mitText": mit_text})
+            return self.json({"id": sid, "name": name, "seiten": seiten_info(s.original), "mitText": mit_text,
+                              "metadaten": s.metadaten})
 
         if url.path == "/api/vorschau":
             s = self.sitzung(q)

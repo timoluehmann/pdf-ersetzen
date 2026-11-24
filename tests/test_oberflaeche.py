@@ -72,7 +72,10 @@ def test_vorschau_und_download(basis, sitzung):
 
     status, kopf, pdf = anfrage(f"{basis}/api/download?id={sid}")
     assert status == 200 and "Rechnung%20April_bearbeitet.pdf" in kopf["Content-Disposition"]
-    assert "112,80" in pymupdf.open("pdf", pdf)[0].get_text()
+    ergebnis = pymupdf.open("pdf", pdf)
+    assert "112,80" in ergebnis[0].get_text()
+    assert daten["hinweise"] == []  # saubere Ausgabe ohne Rest
+    assert not any(alias.startswith("PE") for *_, alias, _enc in ergebnis[0].get_fonts())
 
 
 def test_leere_regeln_setzen_zurueck(basis, sitzung):
@@ -139,3 +142,21 @@ def test_vorschau_nennt_erkannte_und_gesetzte_schrift(basis, sitzung):
         assert t["schrift_neu"]
         # Arial (macOS, Windows) gilt als dieselbe Schrift, Liberation Sans (Linux) nicht
         assert t["schrift_ok"] is t["schrift_neu"].startswith("Arial")
+
+
+def test_nur_dokumentangaben_aendern(basis, sitzung):
+    sid = sitzung["id"]
+    assert sitzung["metadaten"] == {"title": "", "author": "", "subject": "", "keywords": ""}
+    angaben = {"regeln": [], "metadaten": {**sitzung["metadaten"], "title": "Rechnung April", "author": "Jürgen Köhler"}}
+    status, _, _ = anfrage(f"{basis}/api/vorschau?id={sid}", json.dumps(angaben).encode())
+    assert status == 200
+    status, _, pdf = anfrage(f"{basis}/api/download?id={sid}")
+    assert status == 200
+    meta = pymupdf.open("pdf", pdf).metadata
+    assert meta["title"] == "Rechnung April" and meta["author"] == "Jürgen Köhler"
+    assert not meta["creationDate"] and not meta["modDate"]
+
+    # unverändert zurückgesetzt: nichts zu speichern
+    anfrage(f"{basis}/api/vorschau?id={sid}", json.dumps({"regeln": [], "metadaten": sitzung["metadaten"]}).encode())
+    status, _, _ = anfrage(f"{basis}/api/download?id={sid}")
+    assert status == 409

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pymupdf
 
+from .bereinigen import speichere
+
 def _schrift_ordner() -> list[Path]:
     """Übliche Schriftordner unter macOS, Windows und Linux. Fehlende Ordner werden übersprungen."""
     heim = Path.home()
@@ -999,11 +1001,19 @@ def bearbeite(
     seiten: set[int] | None = None,
     vorschau: Path | None = None,
     einfuegungen: list[Einfuegung] | None = None,
+    sauber: bool = True,
+    hinweise: list[str] | None = None,
+    metadaten: dict[str, str] | None = None,
 ) -> tuple[list[Ergebnis], list[Regel], dict[int, int]]:
-    """Einfügungen bekommen ihr Ergebnis (rect, schrift, notizen) direkt gesetzt."""
+    """Einfügungen bekommen ihr Ergebnis (rect, schrift, notizen) direkt gesetzt. Mit `sauber`
+    wird ohne Bearbeitungsspuren gespeichert (siehe bereinigen.py), Meldungen dazu landen in
+    `hinweise`. `metadaten` (title, author, subject, keywords) überschreibt die Dokumentangaben."""
     doc = pymupdf.open(eingabe)
     if doc.needs_pass:
         raise SystemExit("PDF ist passwortgeschützt.")
+    with open(eingabe, "rb") as f:  # PyMuPDF meldet hier immer 1.7, der Dateikopf weiß es genau
+        kopf = re.match(rb"%PDF-(\d\.\d)", f.read(16))
+    version = kopf.group(1).decode() if kopf else ""
     schriften = Schriften(doc)
     alle: list[Ergebnis] = []
     korrekturen: dict[int, int] = {}
@@ -1026,8 +1036,9 @@ def bearbeite(
             geaendert.append(nr)
     if vorschau and geaendert:
         erzeuge_vorschau(eingabe, doc, geaendert, vorschau)
-    doc.subset_fonts()  # sonst landet z. B. die komplette Arial (ca. 750 KB) im PDF
-    doc.save(ausgabe, garbage=3, deflate=True)
+    meldungen = speichere(doc, ausgabe, sauber, metadaten, version)
+    if hinweise is not None:
+        hinweise += meldungen
     nicht_gefunden = [r for r in regeln if not any(e.fund.regel is r for e in alle)]
     return alle, nicht_gefunden, korrekturen
 
@@ -1063,6 +1074,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-s", "--seiten", help="z. B. 1,3-4 (Standard: alle)")
     p.add_argument("--teilstring", action="store_true", help="auch innerhalb von Wörtern/Zahlen ersetzen")
     p.add_argument("--vorschau", action="store_true", help="PNG vorher/nachher je geänderter Seite")
+    for flag, hilfe in (("--titel", "Titel"), ("--autor", "Autor"), ("--thema", "Thema"), ("--stichwoerter", "Stichwörter")):
+        p.add_argument(flag, metavar="TEXT", help=f"{hilfe} in den Dokumentangaben setzen (\"\" leert das Feld)")
+    p.add_argument("--ohne-bereinigung", action="store_true",
+                   help="Bearbeitungsspuren (Metadaten, Schriftkopien, Revisionen) nicht entfernen")
     a = p.parse_args(argv)
 
     if not a.pdf.exists():
@@ -1079,7 +1094,12 @@ def main(argv: list[str] | None = None) -> int:
     vorschau = ausgabe.with_name(ausgabe.stem + "_vorschau") if a.vorschau else None
 
     regeln = lies_regeln(a.regel, a.regeldatei)
-    ergebnisse, fehlend, korrekturen = bearbeite(a.pdf, ausgabe, regeln, a.teilstring, seiten, vorschau)
+    hinweise: list[str] = []
+    metadaten = {k: v for k, v in (("title", a.titel), ("author", a.autor), ("subject", a.thema),
+                                   ("keywords", a.stichwoerter)) if v is not None}
+    ergebnisse, fehlend, korrekturen = bearbeite(a.pdf, ausgabe, regeln, a.teilstring, seiten, vorschau,
+                                                 sauber=not a.ohne_bereinigung, hinweise=hinweise,
+                                                 metadaten=metadaten or None)
 
     for e in ergebnisse:
         f = e.fund
@@ -1088,6 +1108,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"S. {f.seite}: {f.regel.alt!r} → {f.regel.neu!r}  [{f.ausrichtung}, Schrift: {schrift}{zusatz}]")
     for nr, anzahl in korrekturen.items():
         print(f"S. {nr}: {anzahl} Nachbarzeichen, die MuPDF verschoben hatte, auf Originalposition zurückgesetzt")
+    for h in hinweise:
+        print(h)
     for r in fehlend:
         print(f"NICHT GEFUNDEN: {r.alt!r}", file=sys.stderr)
     print(f"\n{len(ergebnisse)} Ersetzung(en) → {ausgabe}")
