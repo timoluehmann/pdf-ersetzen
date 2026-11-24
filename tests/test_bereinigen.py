@@ -1,5 +1,4 @@
 """Saubere Ausgabe: keine Bearbeitungsspuren, gleiche Optik, gleicher Text."""
-import subprocess
 import re
 from pathlib import Path
 
@@ -284,10 +283,23 @@ def type1c_otf():
     return s[0]
 
 
+def _fontfile_schluessel(pdf: Path) -> set[str]:
+    """Welche FontFile-Varianten die eingebetteten Schriften nutzen (ohne poppler, nur PyMuPDF):
+    FontFile = Type 1, FontFile2 = TrueType, FontFile3 = CFF/Type1C."""
+    doc = pymupdf.open(pdf)
+    schluessel = set()
+    for xref in range(1, doc.xref_length()):
+        obj = doc.xref_object(xref, compressed=True)
+        for k in ("FontFile3", "FontFile2", "FontFile"):
+            if re.search(rf"/{k}\b", obj):
+                schluessel.add(k)
+    return schluessel
+
+
 @pytest.mark.parametrize("differences", [False, True], ids=["winansi", "differences"])
 def test_einfache_cff_schrift_wird_wiederverwendet(type1c_otf, tmp_path, differences):
     pdf = _type1c_pdf(tmp_path / "t1c.pdf", type1c_otf, ["Summe 100,00", "Reisekosten 86,40"], differences)
-    assert "Type 1C" in subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True).stdout
+    assert _fontfile_schluessel(pdf) == {"FontFile3"}  # Type 1C (CFF), nicht TrueType
     sauber, roh = tmp_path / "sauber.pdf", tmp_path / "roh.pdf"
     regeln = [Regel("100,00", "110,00")]  # alle Ziffern stecken schon im Subset
     hinweise: list[str] = []
@@ -424,10 +436,11 @@ def _type1_pdf(pfad: Path, zeilen: list[str]) -> Path:
 
 def test_type1_pdf_ist_echte_type1_schrift(tmp_path):
     pdf = _type1_pdf(tmp_path / "t1.pdf", ["Summe 100,00"])
-    zeile = [z for z in subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True).stdout.splitlines()
-             if "TestGothic" in z][0]
-    assert "Type 1 " in zeile and "Type 1C" not in zeile  # FontFile, nicht FontFile3
-    assert pymupdf.open(pdf)[0].get_text().strip() == "Summe 100,00"
+    assert _fontfile_schluessel(pdf) == {"FontFile"}  # echtes Type 1 (PostScript), nicht FontFile3
+    doc = pymupdf.open(pdf)
+    x = doc[0].get_fonts()[0][0]
+    assert doc.xref_get_key(x, "Subtype")[1] == "/Type1"
+    assert doc[0].get_text().strip() == "Summe 100,00"
 
 
 def test_type1_schrift_wird_wiederverwendet(tmp_path):
