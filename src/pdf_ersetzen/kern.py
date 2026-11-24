@@ -902,6 +902,95 @@ def fuege_ein(seite: pymupdf.Page, einfuegungen: list[Einfuegung], schriften: Sc
             e.notizen.append(f"Ersatzschrift {wahl.font.name} statt {basisname(e.stil['font'])}")
 
 
+# PyMuPDF hängt eingefügten Text als eigenen Content-Stream hinter den Seiteninhalt. Visuell
+# sitzt er richtig (per Koordinate), in der Reihenfolge der Zeichenbefehle aber ganz am Ende.
+# Parser, die den Text in Stream-Reihenfolge statt nach Koordinaten lesen (z. B. pdftotext -raw
+# oder einfache Rechnungs-Parser), bekommen den neuen Wert dadurch am Seitenende statt in seiner
+# Zeile. Die folgende Funktion verschiebt jeden eingefügten Textblock hinter den vorhandenen
+# Block derselben Grundlinie, sodass die Lesereihenfolge stimmt. Das Druckbild bleibt gleich und
+# wird zur Sicherheit verglichen; weicht es ab, bleibt der ursprüngliche Stream stehen.
+
+_SEG_TOKEN = re.compile(rb"\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>|\[(?:[^\]\\]|\\.)*\]|[^\s\[\]()<>]+|[\[\]()<>]")
+
+
+def _segmente(roh: bytes) -> list[tuple[bytes, bool]]:
+    """Zerlegt einen bereinigten Content-Stream in Top-Level-Stücke: jedes balancierte
+    `q … Q` als eigenes Segment (True), alles dazwischen unverändert (False)."""
+    out: list[tuple[bytes, bool]] = []
+    tiefe = 0
+    start = 0
+    for t in _SEG_TOKEN.finditer(roh):
+        w = t.group(0)
+        if w == b"q":
+            if tiefe == 0 and start < t.start():
+                out.append((roh[start:t.start()], False))
+                start = t.start()
+            tiefe += 1
+        elif w == b"Q" and tiefe > 0:
+            tiefe -= 1
+            if tiefe == 0:
+                out.append((roh[start:t.end()], True))
+                start = t.end()
+    if start < len(roh):
+        out.append((roh[start:], False))
+    return out
+
+
+def _block_info(seg: bytes) -> tuple[str, float] | None:
+    """(Schrift-Alias, Grundlinie y) eines `q … Q`-Textblocks, sonst None."""
+    bt = re.search(rb"BT\s*/(\w+)\s+[\d.]+\s+Tf", seg)
+    if not bt:
+        return None
+    td = re.search(rb"(-?[\d.]+)\s+(-?[\d.]+)\s+(?:Td|TD)\b", seg)
+    tm = re.search(rb"(?:-?[\d.]+\s+){5}(-?[\d.]+)\s+Tm\b", seg)
+    if td:
+        y = float(td.group(2))
+    elif tm:
+        y = float(tm.group(1))
+    else:
+        return None
+    return bt.group(1).decode("latin-1"), y
+
+
+def sortiere_lesereihenfolge(seite: pymupdf.Page, neue_aliase: set[str], toleranz: float = 1.5) -> bool:
+    """Schiebt die Textblöcke der eingefügten Schriften (neue_aliase) in der Stream-Reihenfolge
+    hinter den vorhandenen Text derselben Zeile. Gibt True zurück, wenn umsortiert wurde."""
+    if not neue_aliase:
+        return False
+    seite.clean_contents()  # alle Teil-Streams zu einem zusammenführen, Zeichenbefehle normieren
+    inhalte = seite.get_contents()
+    if len(inhalte) != 1:
+        return False
+    xref = inhalte[0]
+    original = seite.read_contents()
+    segmente = _segmente(original)
+    bestehend: list[tuple[bytes, tuple[str, float] | None]] = []
+    eingefuegt: list[tuple[bytes, float]] = []
+    for text, ist_block in segmente:
+        info = _block_info(text) if ist_block else None
+        if info and info[0] in neue_aliase:
+            eingefuegt.append((text, info[1]))
+        else:
+            bestehend.append((text, info))
+    if not eingefuegt:
+        return False
+    for text, y in eingefuegt:
+        passend = [i for i, (_, info) in enumerate(bestehend) if info and abs(info[1] - y) <= toleranz]
+        if passend:
+            ziel = passend[-1]
+        else:  # keine gleiche Zeile: hinter den letzten Block oberhalb (größeres y)
+            drueber = [i for i, (_, info) in enumerate(bestehend) if info and info[1] >= y]
+            ziel = max(drueber) if drueber else len(bestehend) - 1
+        bestehend.insert(ziel + 1, (text, _block_info(text)))
+    vorher = seite.get_pixmap(dpi=100).samples
+    neu = b"\n".join(text.strip() for text, _ in bestehend)
+    seite.parent.update_stream(xref, neu)
+    if seite.get_pixmap(dpi=100).samples != vorher:  # Sicherung: Druckbild muss gleich bleiben
+        seite.parent.update_stream(xref, original)
+        return False
+    return True
+
+
 def bearbeite(
     eingabe: Path,
     ausgabe: Path,
@@ -933,6 +1022,7 @@ def bearbeite(
         if neue:
             fuege_ein(seite, neue, schriften, eingefuegt)
         if funde or neue:
+            sortiere_lesereihenfolge(seite, eingefuegt)
             geaendert.append(nr)
     if vorschau and geaendert:
         erzeuge_vorschau(eingabe, doc, geaendert, vorschau)

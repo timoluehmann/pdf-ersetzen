@@ -461,3 +461,61 @@ def test_gekuerzte_schriftnamen_und_cff_subset(tmp_path):
         r = e.fund.neu_rect
         bild = seite.get_pixmap(dpi=72, clip=pymupdf.Rect(r.x0, r.y0, r.x0 + 6, r.y1))  # die "9"
         assert min(bild.samples) < 128, f"Ziffern in Zeile {i + 1} unsichtbar"
+
+
+def _stream_reihenfolge(pdf: Path) -> str:
+    """Sichtbarer Text in der Reihenfolge der Zeichenbefehle im Content-Stream
+    (nicht nach Koordinaten sortiert), wie ihn ein Parser wie 'pdftotext -raw' liest."""
+    seite = pymupdf.open(pdf)[0]
+    stuecke = []
+    for span in seite.get_texttrace():
+        if span.get("type"):  # 1 = Clip/Umriss, kein echter Text
+            continue
+        stuecke.append("".join(chr(c[0]) for c in span["chars"]))
+    return " ".join(s.strip() for s in stuecke if s.strip())
+
+
+def test_ersetzter_text_steht_in_lesereihenfolge_in_seiner_zeile(tmp_path):
+    """Nach dem Ersetzen darf der neue Wert nicht als loser Block am Seitenende hängen,
+    sondern muss in der Stream-Reihenfolge in seiner Zeile stehen."""
+    doc = pymupdf.open()
+    s = doc.new_page()
+    s.insert_font("ar", fontfile=ARIAL)
+    f = pymupdf.Font(fontfile=ARIAL)
+    for i, (text, betrag) in enumerate([("Zwischensumme", "86,40"), ("Gesamtbetrag", "102,40")]):
+        y = 140 + i * 20
+        s.insert_text((70, y), text, fontname="ar", fontsize=11)
+        s.insert_text((520 - f.text_length(betrag, 11), y), betrag, fontname="ar", fontsize=11)
+    doc.subset_fonts()
+    pdf = tmp_path / "r.pdf"
+    doc.save(pdf)
+    ziel = tmp_path / "neu.pdf"
+    bild_vor = pymupdf.open(pdf)[0].get_pixmap(dpi=120).tobytes("png")
+    bearbeite(pdf, ziel, [Regel("86,40", "99,00"), Regel("102,40", "111,60")])
+    reihenfolge = _stream_reihenfolge(ziel)
+    assert "Zwischensumme 99,00" in reihenfolge
+    assert "Gesamtbetrag 111,60" in reihenfolge
+    # beide neuen Werte stehen vor dem jeweils nächsten Zeilenanfang, nicht gesammelt am Ende
+    assert reihenfolge.index("99,00") < reihenfolge.index("Gesamtbetrag")
+
+
+def test_lesereihenfolge_laesst_grafik_und_druckbild_unveraendert(pdf, tmp_path):
+    """Die Umsortierung darf Linien und farbige Summe nicht verschieben: gleiches Druckbild."""
+    import hashlib
+
+    from pdf_ersetzen.kern import bearbeite as _b
+
+    ziel = tmp_path / "neu.pdf"
+    _b(pdf, ziel, [Regel("86,40", "99,00"), Regel("2.336,40", "2.349,00")])
+    # Referenz: dasselbe Ergebnis ohne Umsortierung
+    import pdf_ersetzen.kern as kern
+
+    ref = tmp_path / "ref.pdf"
+    orig = kern.sortiere_lesereihenfolge
+    kern.sortiere_lesereihenfolge = lambda *a, **k: False
+    try:
+        _b(pdf, ref, [Regel("86,40", "99,00"), Regel("2.336,40", "2.349,00")])
+    finally:
+        kern.sortiere_lesereihenfolge = orig
+    h = lambda p: hashlib.md5(pymupdf.open(p)[0].get_pixmap(dpi=150).tobytes("png")).hexdigest()
+    assert h(ziel) == h(ref)
