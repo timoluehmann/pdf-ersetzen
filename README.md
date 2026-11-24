@@ -114,6 +114,12 @@ Werkzeugen bearbeitet wurde. Standardmäßig, abschaltbar mit `--ohne-bereinigun
   aus InDesign), jeweils als CID- und als einfache Schrift, bei Letzterer auch mit eigener
   `/Differences`-Kodierung. Alte Type-1-Schriften (PostScript) erkennt das Tool, führt sie aber nur
   über vorhandene Glyphen zusammen, nicht über einen Programmtausch.
+- **Tagged-PDF:** Hat das PDF eine getaggte Struktur (Marked Content, `BDC … EMC` mit MCID, wie
+  sie Satz- und Report-Systeme für Barrierefreiheit erzeugen), wird der neue Text in denselben
+  getaggten Block einsortiert, in dem der alte stand, statt ungetaggt ans Stream-Ende gehängt. So
+  bleibt das Ergebnis ein gültiges Tagged-PDF: kein ungetaggter Text, keine Lücke in der
+  MCID-Folge, der Strukturbaum bleibt konsistent. Das löst die strukturelle Gültigkeit, nicht die
+  Unauffälligkeit: Dass eine Datei bearbeitet wurde, bleibt forensisch über andere Spuren erkennbar.
 - **Sicherung:** Jeder Schritt wird gerendert und verglichen (Zeichen, Position, Tinte je
   Zeichen, wo das Schriftprogramm wechselt pixelgenau). Weicht etwas ab, wird er zurückgenommen;
   im Zweifel wird ohne Bereinigung gespeichert und das gemeldet.
@@ -124,6 +130,9 @@ Werkzeugen bearbeitet wurde. Standardmäßig, abschaltbar mit `--ohne-bereinigun
 - Die Bereinigung entfernt Bearbeitungsspuren, keine fremden Inhalte: Was ein anderes Werkzeug
   vorher sichtbar ins PDF geschrieben hat (z. B. Text in einer Ersatzschrift), bleibt sichtbar.
 - Gescannte PDFs (Bilder ohne Textebene) gehen nicht.
+- In einem Tagged-PDF wird der neue Text getaggt einsortiert; eine reine Löschung (`X => ` ohne
+  Ersatz) kann einen leeren Block hinterlassen, den die Bereinigung entfernt. Für Löschungen in
+  getaggten PDFs ist das Werkzeug nicht ausgelegt, es ist für Wertersetzungen gedacht.
 - Eingebettete Teilschriften ohne Unicode-Tabelle (häufig bei Word und Chrome) lassen sich nicht
   wiederverwenden. Ist die Schrift nicht installiert, kommt eine Ersatzschrift, das wird angezeigt.
 - Eingefügter Text verdrängt nichts, Tabellenlinien werden nicht mitkopiert.

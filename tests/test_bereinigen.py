@@ -474,3 +474,110 @@ def test_cid_type1_kopie_wird_erkannt(tmp_path):
     doc = pymupdf.open(roh)
     kopien = [bereinigen._cid_schrift(doc, e[0]) for e in doc[0].get_fonts(full=True) if e[4].startswith("PE")]
     assert kopien and all(k and k["prog"] == "type1" for k in kopien)
+
+
+# ---- Tagged-PDF: Ersetzung bleibt im getaggten Block (MCID), kein ungetaggter Anhang ----
+
+def _tagged_pdf(pfad: Path, zeilen: list[str]) -> Path:
+    """Minimales, gültiges Tagged-PDF: jede Zeile ein /P-Strukturelement mit eigener MCID, im
+    Content-Stream als /P <</MCID n>> BDC … EMC. Helvetica als Base-14-Schrift."""
+    doc = pymupdf.open()
+    s = doc.new_page()
+    hv = doc.get_new_xref()
+    doc.update_object(hv, "<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>")
+    doc.xref_set_key(s.xref, "Resources", f"<</Font<</hv {hv} 0 R>>>>")
+    inhalt = b""
+    for i, z in enumerate(zeilen):
+        lit = z.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+        inhalt += b"/P <</MCID %d>> BDC\nBT /hv 11 Tf 70 %d Td (" % (i, 760 - 24 * i) + lit + b")Tj ET\nEMC\n"
+    strom = doc.get_new_xref()
+    doc.update_object(strom, "<<>>")
+    doc.update_stream(strom, inhalt)
+    doc.xref_set_key(s.xref, "Contents", f"{strom} 0 R")
+    doc.xref_set_key(s.xref, "StructParents", "0")
+    tr, de = doc.get_new_xref(), doc.get_new_xref()
+    pes = []
+    for i in range(len(zeilen)):
+        pe = doc.get_new_xref()
+        doc.update_object(pe, f"<</Type/StructElem/S/P/P {de} 0 R/Pg {s.xref} 0 R/K {i}>>")
+        pes.append(pe)
+    kinder = " ".join(f"{p} 0 R" for p in pes)
+    doc.update_object(de, f"<</Type/StructElem/S/Document/P {tr} 0 R/K [{kinder}]>>")
+    pt = doc.get_new_xref()
+    doc.update_object(pt, f"<</Nums [0 [{kinder}]]>>")
+    doc.update_object(tr, f"<</Type/StructTreeRoot/K {de} 0 R/ParentTree {pt} 0 R/ParentTreeNextKey {len(zeilen)}>>")
+    doc.xref_set_key(doc.pdf_catalog(), "StructTreeRoot", f"{tr} 0 R")
+    doc.xref_set_key(doc.pdf_catalog(), "MarkInfo", "<</Marked true>>")
+    doc.save(pfad)
+    return pfad
+
+
+def _ungetaggte_textshows(roh: bytes) -> int:
+    """Zahl der Tj/TJ außerhalb jeder Marked-Content-Sequenz (BDC…EMC). In einem gültigen
+    Tagged-PDF muss sichtbarer Text getaggt sein, also 0."""
+    from pdf_ersetzen.kern import _MC_TOKEN
+    tiefe = n = 0
+    for m in _MC_TOKEN.finditer(roh):
+        w = m.group(0)
+        if w in (b"BDC", b"BMC"):
+            tiefe += 1
+        elif w == b"EMC":
+            tiefe = max(0, tiefe - 1)
+        elif w in (b"Tj", b"TJ") and tiefe == 0:
+            n += 1
+    return n
+
+
+def _stream_mcids(doc) -> set[int]:
+    return {int(x) for x in re.findall(rb"/MCID\s+(\d+)", doc[0].read_contents())}
+
+
+def _struct_mcids(doc) -> set[int]:
+    """MCIDs, die der Strukturbaum referenziert (K-Wert eines StructElem als Zahl)."""
+    mcids = set()
+    for x in range(1, doc.xref_length()):
+        o = doc.xref_object(x, compressed=True)
+        if "/StructElem" in o and (km := re.search(r"/K\s+(\d+)\b", o)):
+            mcids.add(int(km.group(1)))
+    return mcids
+
+
+def _block_mit(doc, suchtext: str) -> int | None:
+    """MCID des Blocks, in dem suchtext (als Literal-String) steht."""
+    roh = doc[0].read_contents().decode("latin-1")
+    for m in re.finditer(r"/MCID\s+(\d+)>>\s*BDC(.*?)EMC", roh, re.S):
+        if suchtext in "".join(re.findall(r"\(((?:[^()\\]|\\.)*)\)", m.group(2))):
+            return int(m.group(1))
+    return None
+
+
+@pytest.mark.parametrize("sauber", [False, True], ids=["roh", "sauber"])
+def test_tagged_pdf_bleibt_gueltig_getaggt(tmp_path, sauber):
+    pdf = _tagged_pdf(tmp_path / "tag.pdf", ["Rechnung 2026-0412", "Reisekosten 86,40 EUR", "Summe 1.250,00 EUR"])
+    assert _ungetaggte_textshows(pymupdf.open(pdf)[0].read_contents()) == 0  # Ausgangszustand sauber
+    aus = tmp_path / "aus.pdf"
+    bearbeite(pdf, aus, [Regel("86,40", "99,90"), Regel("1.250,00", "1.380,00")], sauber=sauber)
+    doc = pymupdf.open(aus)
+    assert "Reisekosten 99,90 EUR" in text(aus) and "Summe 1.380,00 EUR" in text(aus)
+    assert _ungetaggte_textshows(doc[0].read_contents()) == 0           # kein ungetaggter Text am Stream-Ende
+    assert _stream_mcids(doc) == {0, 1, 2}                              # keine Lücke in der MCID-Folge
+    assert _stream_mcids(doc) == _struct_mcids(doc)                     # Strukturbaum bleibt konsistent
+
+
+def test_tagged_ersetzung_bleibt_im_richtigen_block(tmp_path):
+    pdf = _tagged_pdf(tmp_path / "tag.pdf", ["Rechnung 2026-0412", "Reisekosten 86,40 EUR", "Summe 1.250,00 EUR"])
+    aus = tmp_path / "aus.pdf"
+    bearbeite(pdf, aus, [Regel("86,40", "99,90")], sauber=False)
+    doc = pymupdf.open(aus)
+    # der neue Wert sitzt im selben MCID-Block wie der unveränderte Teil seiner Zeile
+    assert _block_mit(doc, "Reisekosten ") == 1
+
+
+def test_untagged_pdf_unveraendert_durch_tagging_logik(tmp_path):
+    """Ein PDF ohne Marked Content darf von der Tagging-Logik nicht angefasst werden."""
+    from test_ersetzen import rechnung
+    pdf = rechnung(tmp_path / "r.pdf")
+    assert b"BDC" not in pymupdf.open(pdf)[0].read_contents()
+    aus = tmp_path / "aus.pdf"
+    bearbeite(pdf, aus, [Regel("86,40 €", "112,80 €")], sauber=False)
+    assert "112,80" in text(aus) and b"BDC" not in pymupdf.open(aus)[0].read_contents()

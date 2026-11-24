@@ -960,6 +960,78 @@ def _block_info(seg: bytes) -> tuple[str, float] | None:
     return bt.group(1).decode("latin-1"), y
 
 
+_MC_TOKEN = re.compile(rb"\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>|\[(?:[^\]\\]|\\.)*\]|/[^\s/\[\]()<>]+|[^\s\[\]()<>/]+|[\[\]()<>]")
+
+
+def _platziere_in_marken(roh: bytes, neue_aliase: set[str], toleranz: float) -> bytes | None:
+    """Schiebt jeden eingefügten Textblock vor das EMC der Marked-Content-Sequenz (BDC…EMC), die
+    den vorhandenen Text derselben Grundlinie trägt. So bleibt der neue Text Teil desselben
+    getaggten Blocks (gleiche MCID), statt ungetaggt am Stream-Ende zu stehen. None, wenn nichts
+    einzuordnen ist. Für Blöcke ohne passende Marke bleibt die Reihenfolge unverändert."""
+    toks = [(m.group(0), m.start(), m.end()) for m in _MC_TOKEN.finditer(roh)]
+    mc_tiefe = q_tiefe = 0
+    tf = y = None
+    shows: list[tuple[str | None, float | None, int, int]] = []  # Schrift, Grundlinie, MC-Tiefe, Position
+    emcs: list[tuple[int, int]] = []                             # geschlossene Tiefe, Position
+    bloecke: list[list] = []                                     # [start, ende, schrift, y]
+    stapel: list[list] = []
+    for i, (w, s, e) in enumerate(toks):
+        if w == b"q":
+            if q_tiefe == 0:
+                stapel.append([s, None, None, None])
+            q_tiefe += 1
+        elif w == b"Q" and q_tiefe > 0:
+            q_tiefe -= 1
+            if q_tiefe == 0 and stapel:
+                b = stapel.pop(); b[1] = e; bloecke.append(b)
+        elif w == b"BT":
+            tf = y = None
+        elif w in (b"BDC", b"BMC"):
+            mc_tiefe += 1
+        elif w == b"EMC" and mc_tiefe > 0:
+            emcs.append((mc_tiefe, s)); mc_tiefe -= 1
+        elif w == b"Tf" and i >= 2:
+            tf = toks[i - 2][0].lstrip(b"/").decode("latin-1")
+        elif w in (b"Td", b"TD") and i >= 1:
+            try: y = float(toks[i - 1][0])
+            except ValueError: pass
+        elif w == b"Tm" and i >= 1:
+            try: y = float(toks[i - 1][0])
+            except ValueError: pass
+        elif w in (b"Tj", b"TJ"):
+            shows.append((tf, y, mc_tiefe, s))
+            if stapel and tf:
+                stapel[-1][2], stapel[-1][3] = tf, y
+    eingefuegte = [(bs, be, by) for bs, be, bf, by in bloecke if bf in neue_aliase]
+    orig = [(oy, od, op) for of, oy, od, op in shows if of not in neue_aliase and oy is not None]
+    if not eingefuegte or not orig:
+        return None
+    einsetzen: dict[int, list[bytes]] = {}
+    loeschen: list[tuple[int, int]] = []
+    for bs, be, by in eingefuegte:
+        kand = sorted((abs(oy - (by or 0)), od, op) for oy, od, op in orig if abs(oy - (by or 0)) <= toleranz)
+        ziel = next((es for cd, es in emcs if es > kand[0][2] and cd == kand[0][1]), None) if kand and kand[0][1] > 0 else None
+        if ziel is None:  # kein umschließendes Tag: Block unverändert lassen
+            continue
+        einsetzen.setdefault(ziel, []).append(roh[bs:be])
+        loeschen.append((bs, be))
+    if not einsetzen:
+        return None
+    marken = [("ins", p, 0) for p in einsetzen] + [("del", s, e) for s, e in loeschen]
+    marken.sort(key=lambda m: m[1])
+    out = bytearray(); cur = 0
+    for art, a, b in marken:
+        out += roh[cur:a]
+        if art == "ins":
+            for blk in einsetzen[a]:
+                out += b"\n" + blk + b"\n"
+            cur = a
+        else:
+            cur = b
+    out += roh[cur:]
+    return bytes(out)
+
+
 def sortiere_lesereihenfolge(seite: pymupdf.Page, neue_aliase: set[str], toleranz: float = 1.5) -> bool:
     """Schiebt die Textblöcke der eingefügten Schriften (neue_aliase) in der Stream-Reihenfolge
     hinter den vorhandenen Text derselben Zeile. Gibt True zurück, wenn umsortiert wurde."""
@@ -971,6 +1043,16 @@ def sortiere_lesereihenfolge(seite: pymupdf.Page, neue_aliase: set[str], toleran
         return False
     xref = inhalte[0]
     original = seite.read_contents()
+    if b"BDC" in original or b"BMC" in original:  # Tagged-PDF: in die Marke einsortieren, nicht dahinter
+        neu = _platziere_in_marken(original, neue_aliase, toleranz)
+        if neu is None:
+            return False
+        vorher = seite.get_pixmap(dpi=100).samples
+        seite.parent.update_stream(xref, neu)
+        if seite.get_pixmap(dpi=100).samples != vorher:  # Druckbild muss gleich bleiben
+            seite.parent.update_stream(xref, original)
+            return False
+        return True
     segmente = _segmente(original)
     bestehend: list[tuple[bytes, tuple[str, float] | None]] = []
     eingefuegt: list[tuple[bytes, float]] = []
