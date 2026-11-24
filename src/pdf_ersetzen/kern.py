@@ -201,6 +201,16 @@ def norm(text: str) -> str:
     return text.translate(NORMALISIERUNG)
 
 
+# Nur fürs Suchen: Gedankenstriche und Schrägstrich-Varianten tippt niemand ein. Nicht in
+# NORMALISIERUNG, weil die Oberfläche daraus den vorbelegten Ersatztext baut und ein "–"
+# sonst stillschweigend zu "-" würde.
+SUCHNORMALISIERUNG = str.maketrans({"–": "-", "—": "-", "⁄": "/", "∕": "/"})
+
+
+def suchnorm(text: str) -> str:
+    return norm(text).translate(SUCHNORMALISIERUNG)
+
+
 def finde(seite: pymupdf.Page, nr: int, regeln: list[Regel], teilstring: bool) -> list[Fundstelle]:
     zeilen = zeilen_der_seite(seite)
     funde = []
@@ -208,9 +218,9 @@ def finde(seite: pymupdf.Page, nr: int, regeln: list[Regel], teilstring: bool) -
     for regel in sorted(regeln, key=lambda r: not r.stellen):
         if regel.stellen and not any(s == nr for s, _, _ in regel.stellen):
             continue
-        alt = norm(regel.alt)
+        alt = suchnorm(regel.alt)
         for zeile in zeilen:
-            text = norm("".join(z.c for z in zeile))
+            text = suchnorm("".join(z.c for z in zeile))
             start = text.find(alt)
             while start != -1:
                 ende = start + len(alt)
@@ -357,6 +367,54 @@ def normiert(name: str) -> str:
 _systemschriften: dict[str, Path] | None = None
 _sammlungen: dict[str, Path] = {}  # normierter Dateiname -> .ttc
 _dateinamen: dict[str, Path] = {}  # dateiname.ttf (klein) -> Pfad
+_psnamen: dict[str, Path] | None = None  # normierter PostScript-Name -> Pfad
+
+
+def postscript_name(pfad: Path) -> str | None:
+    """PostScript-Name (name-Tabelle, ID 6) einer .otf/.ttf. PDFs nennen Schriften so,
+    Dateinamen weichen oft ab: "TradeGothicLTStd-Bd2" liegt in "...Bold No. 2.otf"."""
+    import struct
+
+    try:
+        with open(pfad, "rb") as f:
+            kopf = f.read(12)
+            if len(kopf) < 12:
+                return None
+            n = struct.unpack(">H", kopf[4:6])[0]
+            verzeichnis = f.read(16 * n)
+            for k in range(n):
+                tag, _, ab, laenge = struct.unpack_from(">4sIII", verzeichnis, 16 * k)
+                if tag == b"name":
+                    f.seek(ab)
+                    tabelle = f.read(laenge)
+                    break
+            else:
+                return None
+        anzahl, speicher = struct.unpack_from(">xxHH", tabelle, 0)
+        funde = {}
+        for i in range(anzahl):
+            plattform, kodierung, _, nid, laenge, ab = struct.unpack_from(">HHHHHH", tabelle, 6 + 12 * i)
+            if nid != 6:
+                continue
+            roh = tabelle[speicher + ab : speicher + ab + laenge]
+            if plattform in (0, 3):
+                funde.setdefault("unicode", roh.decode("utf-16-be", "ignore"))
+            elif plattform == 1 and kodierung == 0:
+                funde.setdefault("mac", roh.decode("mac_roman", "ignore"))
+        return funde.get("unicode") or funde.get("mac")
+    except (OSError, struct.error):
+        return None
+
+
+def _lies_psnamen() -> dict[str, Path]:
+    """Index nach PostScript-Name, erst beim ersten Bedarf gebaut (liest jede Schriftdatei an)."""
+    global _psnamen
+    if _psnamen is None:
+        _psnamen = {}
+        for pfad in _dateinamen.values():
+            if name := postscript_name(pfad):
+                _psnamen.setdefault(normiert(name), pfad)
+    return _psnamen
 
 
 def ttc_schnitte(pfad: Path) -> list[bytes]:
@@ -412,6 +470,8 @@ def systemschrift(name: str) -> tuple[str, bytes] | None:
     _lies_schriftordner()
     gesucht = normiert(basisname(name))
     if pfad := _systemschriften.get(gesucht):
+        return str(pfad), pfad.read_bytes()
+    if pfad := _lies_psnamen().get(gesucht):
         return str(pfad), pfad.read_bytes()
     # Sammlungen, deren Name der Anfang des gesuchten ist: "helveticabold" -> Helvetica.ttc
     for familie, pfad in sorted(_sammlungen.items(), key=lambda kv: -len(kv[0])):
@@ -628,6 +688,10 @@ def ersetze_seite(seite: pymupdf.Page, funde: list[Fundstelle], schriften: Schri
     # 1. Vorbereiten, solange der alte Text noch da ist
     plaene = []
     for f in funde:
+        # Der neue Text beginnt an der Position des ersten alten Zeichens. Fällt vorne etwas
+        # weg ("- 12,00" -> "12,00", "/" -> "" mit mitgezogenem " Monat"), bliebe sonst ein
+        # Leerzeichen davor stehen und der Text säße um dessen Breite neben der Spalte.
+        f.ersatz = f.ersatz.strip()
         span = f.span
         wahl = schriften.waehle(span, f.ersatz)
         alte_breite = f.zeichen[-1].bbox.x1 - f.zeichen[0].origin.x

@@ -343,3 +343,72 @@ def test_schnitte_aus_schriftsammlung():
     assert font.name == "Helvetica Bold"
     assert font.text_length("€", 10) == pytest.approx(7.44, abs=0.01)  # Arial hätte 5,56
     assert systemschrift("GibtEsNicht-Regular") is None
+
+
+def test_schrift_wird_ueber_postscript_namen_gefunden(tmp_path, monkeypatch):
+    """Dateiname und PostScript-Name weichen ab: die Schrift muss trotzdem gefunden werden."""
+    import shutil
+
+    from pdf_ersetzen import kern
+
+    quelle = next(
+        (p for p in kern._lies_schriftordner().values() if p.suffix.lower() in (".ttf", ".otf") and kern.postscript_name(p)),
+        None,
+    )
+    if quelle is None:
+        pytest.skip("keine einzelne Systemschrift vorhanden")
+    psname = kern.postscript_name(quelle)
+    ziel = tmp_path / "ganz anderer dateiname.otf"
+    shutil.copy(quelle, ziel)
+    monkeypatch.setattr(kern, "_systemschriften", {})
+    monkeypatch.setattr(kern, "_dateinamen", {ziel.name: ziel})
+    monkeypatch.setattr(kern, "_sammlungen", {})
+    monkeypatch.setattr(kern, "_psnamen", None)
+    treffer = kern.systemschrift("ABCDEF+" + psname)
+    assert treffer and treffer[0] == str(ziel)
+
+
+def _zeile_mit_praefix(pfad: Path, inhalt: str) -> Path:
+    doc = pymupdf.open()
+    s = doc.new_page()
+    s.insert_font("ar", fontfile=ARIAL)
+    s.insert_text((70, 100), "Spalte beginnt hier", fontname="ar", fontsize=10)
+    s.insert_text((70, 120), inhalt, fontname="ar", fontsize=10)
+    doc.subset_fonts()
+    doc.save(pfad)
+    return pfad
+
+
+def _erstes_zeichen(pdf: Path, y: float = 120) -> tuple[str, float]:
+    zs = [
+        c for b in pymupdf.open(pdf)[0].get_text("rawdict")["blocks"] for l in b.get("lines", [])
+        for sp in l["spans"] for c in sp["chars"] if abs(c["origin"][1] - y) < 1
+    ]
+    z = min(zs, key=lambda c: c["origin"][0])
+    return z["c"], z["origin"][0]
+
+
+@pytest.mark.parametrize("inhalt, alt, neu, erwartet", [
+    ("- 12,00 EUR", "- 12,00", " 12,00", "12,00 EUR"),  # Oberfläche: nur der Strich gelöscht
+    ("/ Monat netto", "/ Monat", " Monat", "Monat netto"),
+    ("/ Monat netto", "/", "", "Monat netto"),  # Präfix entfernt, Rest wird mitgezogen
+    ("- 12,00 EUR", "-", "", "12,00 EUR"),
+])
+def test_wegfallendes_praefix_beginnt_an_der_spalte(tmp_path, inhalt, alt, neu, erwartet):
+    pdf = _zeile_mit_praefix(tmp_path / "p.pdf", inhalt)
+    ziel = tmp_path / "neu.pdf"
+    ergebnisse, fehlend, _ = bearbeite(pdf, ziel, [Regel(alt, neu)])
+    assert ergebnisse and not fehlend
+    c, x = _erstes_zeichen(ziel)
+    assert c == erwartet[0]
+    assert x == pytest.approx(70, abs=0.05)
+    assert text(ziel).splitlines()[1] == erwartet
+
+
+def test_gedankenstrich_wird_mit_bindestrich_gefunden(tmp_path):
+    pdf = _zeile_mit_praefix(tmp_path / "p.pdf", "–12,00 EUR")
+    ziel = tmp_path / "neu.pdf"
+    ergebnisse, fehlend, _ = bearbeite(pdf, ziel, [Regel("-12,00", "12,00")])
+    assert ergebnisse and not fehlend
+    assert _erstes_zeichen(ziel) == ("1", pytest.approx(70, abs=0.05))
+    assert text(ziel).splitlines()[1] == "12,00 EUR"
