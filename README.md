@@ -110,8 +110,10 @@ Werkzeugen bearbeitet wurde. Standardmäßig, abschaltbar mit `--ohne-bereinigun
   Breiten gleicht Kerning aus. Fehlt ein Zeichen im Original-Subset und ist es dieselbe
   Schriftdatei, übernimmt das Original das vollständige Schriftprogramm (nur TrueType). Geht beides
   nicht, bleibt die Kopie unter neutralem Namen im PDF und es gibt einen Hinweis, welches Zeichen
-  fehlt. Unterstützt sind TrueType (Word, Lexware, Systemschriften) und OpenType mit CFF-Umrissen
-  als CID-Schrift; einfache Type1C-Schriften noch nicht.
+  fehlt. Unterstützt sind TrueType (Word, Lexware, Systemschriften) und CFF/Type1C (Hausschriften
+  aus InDesign), jeweils als CID- und als einfache Schrift, bei Letzterer auch mit eigener
+  `/Differences`-Kodierung. Alte Type-1-Schriften (PostScript) erkennt das Tool, führt sie aber nur
+  über vorhandene Glyphen zusammen, nicht über einen Programmtausch.
 - **Sicherung:** Jeder Schritt wird gerendert und verglichen (Zeichen, Position, Tinte je
   Zeichen, wo das Schriftprogramm wechselt pixelgenau). Weicht etwas ab, wird er zurückgenommen;
   im Zweifel wird ohne Bereinigung gespeichert und das gemeldet.

@@ -153,9 +153,99 @@ def _freier_alias(belegt: set[str]) -> str:
     return f"F{n}"
 
 
+# Adobe-Glyphennamen für Zeichen, die sich nicht aus einer Standardkodierung ergeben (seltene
+# /Differences-Einträge in InDesign-PDFs). ASCII und Latin-1 kommen über cp1252/latin-1, hier nur
+# der häufige Rest aus westeuropäischen Texten.
+_GLYPHNAMEN = {
+    "space": " ", "nbspace": "\xa0", "euro": "€", "bullet": "•", "periodcentered": "·",
+    "endash": "–", "emdash": "—", "hyphen": "-", "sfthyphen": "\xad", "minus": "−",
+    "quoteleft": "‘", "quoteright": "’", "quotedblleft": "“", "quotedblright": "”",
+    "quotesinglbase": "‚", "quotedblbase": "„", "quotesingle": "'", "quotedbl": '"',
+    "guillemotleft": "«", "guillemotright": "»", "guilsinglleft": "‹", "guilsinglright": "›",
+    "ellipsis": "…", "trademark": "™", "copyright": "©", "registered": "®", "degree": "°",
+    "section": "§", "paragraph": "¶", "dagger": "†", "daggerdbl": "‡", "perthousand": "‰",
+    "fi": "fi", "fl": "fl", "germandbls": "ß", "Euro": "€",
+    "adieresis": "ä", "odieresis": "ö", "udieresis": "ü", "Adieresis": "Ä", "Odieresis": "Ö",
+    "Udieresis": "Ü", "aacute": "á", "agrave": "à", "acircumflex": "â", "eacute": "é",
+    "egrave": "è", "ecircumflex": "ê", "edieresis": "ë", "iacute": "í", "ocircumflex": "ô",
+    "ccedilla": "ç", "ntilde": "ñ", "oslash": "ø", "aring": "å", "ae": "æ",
+}
+
+
+# Adobe-Namen der druckbaren ASCII-Zeichen (Buchstaben und Ziffern programmatisch, Rest fest)
+_ASCII_NAMEN = {
+    "exclam": "!", "quotedbl": '"', "numbersign": "#", "dollar": "$", "percent": "%",
+    "ampersand": "&", "quotesingle": "'", "parenleft": "(", "parenright": ")", "asterisk": "*",
+    "plus": "+", "comma": ",", "hyphen": "-", "period": ".", "slash": "/", "colon": ":",
+    "semicolon": ";", "less": "<", "equal": "=", "greater": ">", "question": "?", "at": "@",
+    "bracketleft": "[", "backslash": "\\", "bracketright": "]", "asciicircum": "^",
+    "underscore": "_", "grave": "`", "braceleft": "{", "bar": "|", "braceright": "}", "asciitilde": "~",
+}
+_ASCII_NAMEN |= {n: chr(ord("A") + i) for i, n in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ")}
+_ASCII_NAMEN |= {n.lower(): chr(ord("a") + i) for i, n in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ")}
+_ASCII_NAMEN |= {n: str(i) for i, n in enumerate(
+    "zero one two three four five six seven eight nine".split())}
+
+
+def _glyph_zu_zeichen(name: str) -> str | None:
+    """Adobe-Glyphenname -> Zeichen. uniXXXX, uXXXXXX, dann die Namenstabellen."""
+    if name in _ASCII_NAMEN:
+        return _ASCII_NAMEN[name]
+    m = re.fullmatch(r"uni([0-9A-Fa-f]{4})", name) or re.fullmatch(r"u([0-9A-Fa-f]{4,6})", name)
+    if m:
+        try:
+            return chr(int(m.group(1), 16))
+        except (ValueError, OverflowError):
+            return None
+    return _GLYPHNAMEN.get(name)
+
+
+_BASIS_KODIERUNG = {"/WinAnsiEncoding": "cp1252", "/MacRomanEncoding": "mac_roman",
+                    "/StandardEncoding": "latin-1", "/PDFDocEncoding": "latin-1"}
+
+
+def _einfache_kodierung(doc: pymupdf.Document, xref: int) -> dict[int, str] | None:
+    """Code (0-255) -> Zeichen. Standardkodierung als Basis, dann /Differences darüber. None,
+    wenn keine Kodierung angegeben ist (dann ist die interne Schriftkodierung nicht erschließbar)."""
+    typ, enc = doc.xref_get_key(xref, "Encoding")
+    basis = _BASIS_KODIERUNG.get(enc if typ == "name" else "")
+    diffs = ""
+    if typ == "xref" or enc.startswith("<<"):
+        unter = doc.xref_object(_ref(enc), compressed=True) if typ == "xref" else enc
+        b = re.search(r"/BaseEncoding\s*(/\w+)", unter)
+        basis = _BASIS_KODIERUNG.get(b.group(1) if b else "", basis or "cp1252")
+        d = re.search(r"/Differences\s*\[(.*?)\]", unter, re.S)
+        diffs = d.group(1) if d else ""
+    if basis is None:
+        return None
+    tabelle: dict[int, str] = {}
+    for code in range(256):
+        try:
+            z = bytes([code]).decode(basis)
+            if z.isprintable() or z == "\xa0":
+                tabelle[code] = z
+        except (ValueError, UnicodeError):
+            pass
+    code = 0
+    for tok in re.findall(r"\d+|/[^\s/\[\]]+", diffs):
+        if tok[0] == "/":
+            if (z := _glyph_zu_zeichen(tok[1:])) is not None:
+                tabelle[code] = z
+            else:
+                tabelle.pop(code, None)
+            code += 1
+        else:
+            code = int(tok)
+    return tabelle
+
+
 def _einfache_schrift(doc: pymupdf.Document, xref: int) -> dict | None:
-    """Einfache TrueType-Schrift mit WinAnsi-Kodierung (so schreibt Word normalen Text)."""
-    if doc.xref_get_key(xref, "Subtype")[1] != "/TrueType" or doc.xref_get_key(xref, "Encoding")[1] != "/WinAnsiEncoding":
+    """Einfache Schrift (TrueType, Type1 oder Type1C) mit erschließbarer Kodierung. So bettet
+    Word normalen Text ein (TrueType/WinAnsi), InDesign Hausschriften (Type1C, oft /Differences)."""
+    if doc.xref_get_key(xref, "Subtype")[1] not in ("/TrueType", "/Type1", "/MMType1"):
+        return None
+    kodierung = _einfache_kodierung(doc, xref)
+    if kodierung is None:
         return None
     try:
         erster = int(doc.xref_get_key(xref, "FirstChar")[1])
@@ -163,7 +253,7 @@ def _einfache_schrift(doc: pymupdf.Document, xref: int) -> dict | None:
     except ValueError:
         return None
     return {"xref": xref, "unicode": _ref(doc.xref_get_key(xref, "ToUnicode")[1]),
-            "breiten": {erster + i: w for i, w in enumerate(breiten)}}
+            "breiten": {erster + i: w for i, w in enumerate(breiten)}, "kodierung": kodierung}
 
 
 def _schriftname(doc: pymupdf.Document, xref: int) -> str:
@@ -372,9 +462,10 @@ def _codes_im_original(doc: pymupdf.Document, xref: int) -> dict[str, tuple[byte
         tabelle = {}
         for code, breite in einfach["breiten"].items():
             try:
-                if float(breite) > 0:
-                    tabelle[bytes([code]).decode("cp1252")] = (bytes([code]), float(breite))
-            except (ValueError, UnicodeError):
+                zeichen = einfach["kodierung"].get(code)
+                if zeichen is not None and float(breite) > 0:
+                    tabelle.setdefault(zeichen, (bytes([code]), float(breite)))
+            except ValueError:
                 pass
         return tabelle
     return None

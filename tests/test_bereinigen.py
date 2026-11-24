@@ -1,4 +1,5 @@
 """Saubere Ausgabe: keine Bearbeitungsspuren, gleiche Optik, gleicher Text."""
+import subprocess
 import re
 from pathlib import Path
 
@@ -214,3 +215,104 @@ def test_cff_glyphen_erkennung():
     voll = bereinigen._cff_glyphen_mit_umriss(schriften_[0].read_bytes())
     assert voll and len(voll) > 200  # vollständige Schrift: praktisch alle Glyphen mit Umriss
     assert bereinigen._cff_glyphen_mit_umriss(b"kein CFF") is None
+
+
+# ---- Einfache CFF-Schriften (Type 1C), wie InDesign Hausschriften einbettet ----
+
+def _cff_aus_otf(otf: Path) -> bytes:
+    import struct
+    d = otf.read_bytes()
+    for i in range(struct.unpack(">H", d[4:6])[0]):
+        tag = d[12 + 16 * i:16 + 16 * i]
+        off, ln = struct.unpack(">II", d[20 + 16 * i:28 + 16 * i])
+        if tag == b"CFF ":
+            return d[off:off + ln]
+    raise AssertionError("keine CFF-Tabelle in der OTF")
+
+
+def _type1c_pdf(pfad: Path, otf: Path, zeilen: list[str], differences: bool = False) -> Path:
+    """PDF mit einfacher Type-1C-Schrift (eine Byte-Kodierung, CFF-Umrisse), wie InDesign sie
+    erzeugt: WinAnsi oder ein /Differences-Array mit Adobe-Glyphennamen."""
+    cff = _cff_aus_otf(otf)
+    font = pymupdf.Font(fontfile=str(otf))
+    doc = pymupdf.open()
+    s = doc.new_page()
+    datei = doc.get_new_xref()
+    doc.update_object(datei, "<</Subtype/Type1C>>")
+    doc.update_stream(datei, cff)
+    desk = doc.get_new_xref()
+    doc.update_object(desk, f"<</Type/FontDescriptor/FontName/ABCDEF+TradeGothicLTStd-Bd2/Flags 4"
+                            f"/FontBBox[-167 -229 1000 977]/ItalicAngle 0/Ascent 722/Descent -278"
+                            f"/StemV 80/FontFile3 {datei} 0 R>>")
+    genutzt = {c for z in zeilen for c in z.encode("cp1252")}
+    breiten = [round(font.glyph_advance(ord(bytes([c]).decode("cp1252"))) * 1000)
+               if 32 <= c < 256 and c in genutzt else 0 for c in range(32, 256)]
+    if differences:
+        namen = {ord(" "): "space", ord(","): "comma"}
+        namen |= {ord(c): c for c in "SumeRiskotn"}
+        namen |= {ord(str(i)): n for i, n in enumerate("zero one two three four five six seven eight nine".split())}
+        gebraucht = {c for z in zeilen for c in map(ord, z)} & set(namen)
+        diff = "[ " + " ".join(f"{c} /{namen[c]}" for c in sorted(gebraucht)) + " ]"
+        enc = doc.get_new_xref()
+        doc.update_object(enc, f"<</Type/Encoding/Differences {diff}>>")
+        encref = f"{enc} 0 R"
+    else:
+        encref = "/WinAnsiEncoding"
+    schrift = doc.get_new_xref()
+    doc.update_object(schrift, f"<</Type/Font/Subtype/Type1/BaseFont/ABCDEF+TradeGothicLTStd-Bd2"
+                               f"/FirstChar 32/LastChar 255/Widths[{' '.join(map(str, breiten))}]"
+                               f"/Encoding {encref}/FontDescriptor {desk} 0 R>>")
+    doc.xref_set_key(s.xref, "Resources", f"<</Font<</F1 {schrift} 0 R>>>>")
+    inhalt = b""
+    for i, z in enumerate(zeilen):
+        lit = z.encode("cp1252").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+        inhalt += b"BT /F1 11 Tf 70 %d Td (" % (720 - 20 * i) + lit + b") Tj ET\n"
+    strom = doc.get_new_xref()
+    doc.update_object(strom, "<<>>")
+    doc.update_stream(strom, inhalt)
+    doc.xref_set_key(s.xref, "Contents", f"{strom} 0 R")
+    doc.save(pfad)
+    return pfad
+
+
+@pytest.fixture
+def type1c_otf():
+    from test_ersetzen import _trade_gothic
+    s = _trade_gothic("Trade Gothic LT Std Bold No. 2.otf")
+    if not s:
+        pytest.skip("keine CFF-Testschrift (Trade Gothic LT Std) installiert")
+    return s[0]
+
+
+@pytest.mark.parametrize("differences", [False, True], ids=["winansi", "differences"])
+def test_einfache_cff_schrift_wird_wiederverwendet(type1c_otf, tmp_path, differences):
+    pdf = _type1c_pdf(tmp_path / "t1c.pdf", type1c_otf, ["Summe 100,00", "Reisekosten 86,40"], differences)
+    assert "Type 1C" in subprocess.run(["pdffonts", str(pdf)], capture_output=True, text=True).stdout
+    sauber, roh = tmp_path / "sauber.pdf", tmp_path / "roh.pdf"
+    regeln = [Regel("100,00", "110,00")]  # alle Ziffern stecken schon im Subset
+    hinweise: list[str] = []
+    bearbeite(pdf, roh, regeln, sauber=False)
+    bearbeite(pdf, sauber, regeln, hinweise=hinweise)
+    assert hinweise == []
+    assert len(schriften(sauber)) == 1  # keine zweite Schriftkopie
+    assert "Summe 110,00" in text(sauber)
+    a, b = (pymupdf.open(p)[0] for p in (roh, sauber))
+    assert bereinigen._text_gleich(bereinigen._zeichen(a), bereinigen._zeichen(b), toleranz=0.02)
+    assert bereinigen._glyphen_gleich(a, b)
+
+
+def test_einfache_cff_fehlende_zeichen_werden_genannt(type1c_otf, tmp_path):
+    pdf = _type1c_pdf(tmp_path / "t1c.pdf", type1c_otf, ["Summe 100,00"])
+    aus = tmp_path / "aus.pdf"
+    hinweise: list[str] = []
+    bearbeite(pdf, aus, [Regel("100,00", "987,65")], hinweise=hinweise)  # 9 8 7 6 5 fehlen im Subset
+    assert len(hinweise) == 1 and "„56789“" in hinweise[0]
+    assert "Summe 987,65" in text(aus)
+
+
+def test_glyphname_aufloesung():
+    z = bereinigen._glyph_zu_zeichen
+    assert z("comma") == "," and z("zero") == "0" and z("A") == "A" and z("space") == " "
+    assert z("germandbls") == "ß" and z("adieresis") == "ä" and z("Euro") == "€"
+    assert z("uni20AC") == "€" and z("uni00FC") == "ü"
+    assert z("gibtsnicht") is None
