@@ -412,3 +412,52 @@ def test_gedankenstrich_wird_mit_bindestrich_gefunden(tmp_path):
     assert ergebnisse and not fehlend
     assert _erstes_zeichen(ziel) == ("1", pytest.approx(70, abs=0.05))
     assert text(ziel).splitlines()[1] == "12,00 EUR"
+
+
+def _trade_gothic(*dateien: str) -> list[Path] | None:
+    from pdf_ersetzen import kern
+
+    kern._lies_schriftordner()
+    pfade = [kern._dateinamen.get(d.lower()) for d in dateien]
+    return pfade if all(pfade) else None
+
+
+def _pdf_mit_postscript_namen(pfad: Path, schriften: list[Path]) -> Path:
+    """Wie InDesign/Word: BaseFont ist der PostScript-Name, MuPDF meldet je Span aber den
+    internen Namen, auf 24 Zeichen gekürzt ("Trade Gothic LT Std Bold" für Bold und Bd2)."""
+    from pdf_ersetzen import kern
+
+    doc = pymupdf.open()
+    s = doc.new_page()
+    for i, datei in enumerate(schriften):
+        s.insert_font(f"f{i}", fontfile=str(datei))
+        s.insert_text((70, 120 + 20 * i), "Summe 100,00", fontname=f"f{i}", fontsize=11)
+    doc.subset_fonts()
+    namen = {pymupdf.Font(fontfile=str(d)).name: kern.postscript_name(d) for d in schriften}
+    for xref, _, _, name, *_ in s.get_fonts():
+        doc.xref_set_key(xref, "BaseFont", f"/ABCDEF+{namen[name.split('+', 1)[-1]]}")
+    doc.save(pfad)
+    return pfad
+
+
+def test_gekuerzte_schriftnamen_und_cff_subset(tmp_path):
+    """Bold und Bold No. 2 heißen für MuPDF gleich; Light würde ohne PDF-Namen zu Times.
+    Die eingebettete CFF-Teilmenge hat für 9, 8, 7, 4 keinen Umriss: die Ziffern müssen
+    trotzdem sichtbar sein."""
+    schriften = _trade_gothic("Trade Gothic LT Std Bold.otf", "Trade Gothic LT Std Bold No. 2.otf",
+                              "Trade Gothic LT Std Light.otf")
+    if not schriften:
+        pytest.skip("Trade Gothic LT Std nicht installiert")
+    pdf = _pdf_mit_postscript_namen(tmp_path / "tg.pdf", schriften)
+    ziel = tmp_path / "neu.pdf"
+    ergebnisse, fehlend, _ = bearbeite(pdf, ziel, [Regel("100,00", "987,45")])
+    assert len(ergebnisse) == 3 and not fehlend
+    ergebnisse.sort(key=lambda e: e.fund.zeichen[0].origin.y)
+    namen = [e.fund.span["pdf_font"] for e in ergebnisse]
+    assert namen == ["TradeGothicLTStd-Bold", "TradeGothicLTStd-Bd2", "TradeGothicLTStd-Light"]
+    assert all(e.schrift in ("original", "system") for e in ergebnisse)
+    seite = pymupdf.open(ziel)[0]
+    for i, e in enumerate(ergebnisse):
+        r = e.fund.neu_rect
+        bild = seite.get_pixmap(dpi=72, clip=pymupdf.Rect(r.x0, r.y0, r.x0 + 6, r.y1))  # die "9"
+        assert min(bild.samples) < 128, f"Ziffern in Zeile {i + 1} unsichtbar"

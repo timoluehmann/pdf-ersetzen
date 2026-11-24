@@ -487,14 +487,57 @@ def systemschrift(name: str) -> tuple[str, bytes] | None:
 
 
 def deckt_ab(font: pymupdf.Font, text: str) -> bool:
-    for c in text:
-        if c.isspace():
-            continue
+    zeichen = sorted({c for c in text if not c.isspace()})
+    for c in zeichen:
         gid = font.has_glyph(ord(c))
         # Subsets behalten teils die Zuordnung, aber ohne Glyphenumriss
         if not gid or pymupdf.Rect(font.glyph_bbox(ord(c))).is_empty:
             return False
+    return hat_umrisse(font, zeichen)
+
+
+def hat_umrisse(font: pymupdf.Font, zeichen: list[str]) -> bool:
+    """Rendert jedes Zeichen einmal und prüft, ob Pixel entstehen. Nötig für CFF-Subsets
+    (OTF): Dort melden auch geleerte Glyphen die Schriftbox als Ausdehnung, die Ziffern
+    blieben im Ergebnis sonst unsichtbar."""
+    if not zeichen:
+        return True
+    zelle = 30
+    doc = pymupdf.open()
+    seite = doc.new_page(width=zelle * len(zeichen), height=zelle)
+    schreiber = pymupdf.TextWriter(seite.rect)
+    for i, c in enumerate(zeichen):
+        schreiber.append((i * zelle + 5, zelle * 0.75), c, font=font, fontsize=20)
+    schreiber.write_text(seite)
+    bild = seite.get_pixmap(dpi=36, colorspace=pymupdf.csGRAY)
+    breite = bild.width / len(zeichen)
+    for i in range(len(zeichen)):
+        ausschnitt = pymupdf.IRect(round(i * breite), 0, round((i + 1) * breite), bild.height)
+        if _leer(bild, ausschnitt):
+            return False
     return True
+
+
+def _leer(bild: pymupdf.Pixmap, ausschnitt: pymupdf.IRect) -> bool:
+    proben = bild.samples
+    for y in range(ausschnitt.y0, ausschnitt.y1):
+        zeile = proben[y * bild.stride + ausschnitt.x0 : y * bild.stride + ausschnitt.x1]
+        if min(zeile, default=255) < 200:
+            return False
+    return True
+
+
+def _breitenfehler(font: pymupdf.Font | None, span: dict) -> float:
+    """Abweichung zwischen den Zeichenabständen im Span und den Vorschüben der Schrift."""
+    zeichen = span.get("chars") or []
+    if font is None or len(zeichen) < 2:
+        return float("inf")
+    fehler = 0.0
+    for a, b in zip(zeichen, zeichen[1:]):
+        if a["c"].isspace():  # Wortabstände setzen Erzeuger oft frei
+            continue
+        fehler += abs((b["origin"][0] - a["origin"][0]) - font.glyph_advance(ord(a["c"])) * span["size"])
+    return fehler
 
 
 @dataclass
@@ -506,10 +549,18 @@ class Schriftwahl:
     base14: str | None = None
 
 
+@dataclass
+class PdfSchrift:
+    basefont: str  # Name im PDF ohne Subset-Präfix, z. B. "TradeGothicLTStd-Bd2"
+    puffer: bytes
+    font: pymupdf.Font | None  # nur bei eingebetteter Schrift
+
+
 class Schriften:
     def __init__(self, doc: pymupdf.Document):
         self.doc = doc
         self.eingebettet: dict[str, bytes] = {}
+        self.im_pdf: list[PdfSchrift] = []
         for seite in doc:
             for xref, _ext, _typ, name, *_ in seite.get_fonts():
                 if name not in self.eingebettet:
@@ -518,22 +569,45 @@ class Schriften:
                     except Exception:
                         puffer = b""
                     self.eingebettet[name] = puffer or b""
+                    font = None
+                    if puffer:
+                        try:
+                            font = pymupdf.Font(fontbuffer=puffer)
+                        except Exception:
+                            pass
+                    self.im_pdf.append(PdfSchrift(basisname(name), puffer or b"", font))
         self.zaehler = 0
         self.cache: dict[str, Schriftwahl] = {}
 
-    def waehle(self, span: dict, text: str) -> Schriftwahl:
+    def pdf_name(self, span: dict) -> str:
+        """Schriftname, wie er im PDF steht. MuPDF meldet je Span den internen Namen der
+        eingebetteten Schrift, auf 24 Zeichen gekürzt: "TradeGothicLTStd-Bd2" erscheint als
+        "Trade Gothic LT Std Bold", genau wie die normale Bold. Passen mehrere Schriften,
+        entscheiden die Zeichenbreiten."""
+        if "pdf_font" in span:
+            return span["pdf_font"]
         name = span["font"]
-        puffer = next(
-            (p for n, p in self.eingebettet.items() if p and basisname(n) == basisname(name)), None
-        )
+        kandidaten = [
+            s for s in self.im_pdf
+            if s.basefont == basisname(name) or (s.font and s.font.name.startswith(name))
+        ]
+        if len(kandidaten) > 1:
+            kandidaten.sort(key=lambda s: _breitenfehler(s.font, span))
+        ergebnis = kandidaten[0].basefont if kandidaten else basisname(name)
+        span["pdf_font"] = ergebnis
+        return ergebnis
+
+    def waehle(self, span: dict, text: str) -> Schriftwahl:
+        name = self.pdf_name(span)
+        puffer = next((s.puffer for s in self.im_pdf if s.puffer and s.basefont == name), None)
         if puffer:
             try:
                 font = pymupdf.Font(fontbuffer=puffer)
                 if deckt_ab(font, text):
-                    return self._neu("orig:" + basisname(name), font, "original", puffer=puffer)
+                    return self._neu("orig:" + name, font, "original", puffer=puffer)
             except Exception:
                 pass
-        gefunden = systemschrift(name)
+        gefunden = systemschrift(name) or systemschrift(span["font"])
         if gefunden:
             schluessel, puffer = gefunden
             font = pymupdf.Font(fontbuffer=puffer)
@@ -788,7 +862,7 @@ def stil_an(seite: pymupdf.Page, x: float, y: float, schriften: Schriften) -> di
     lauf = zeile[a : b + 1]
     wahl = schriften.waehle(span, "".join(c.c for c in lauf).strip() or "x")
     return {
-        "stil": {k: span[k] for k in ("font", "size", "color", "flags")},
+        "stil": {k: span[k] for k in ("font", "size", "color", "flags", "pdf_font") if k in span},
         "skalierung": round(kalibrierung(lauf, wahl.font, span["size"]), 4),
         "grundlinie": zeile[i].origin.y,
     }
