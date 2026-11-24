@@ -36,21 +36,24 @@ def _objekt(doc: pymupdf.Document, xref: int, key: str) -> str:
 
 
 def _cid_schrift(doc: pymupdf.Document, xref: int) -> dict | None:
-    """Type0/Identity-H mit TrueType-Nachfahre und Glyph-ID = CID, sonst None."""
+    """Type0/Identity-H mit TrueType-Nachfahre (Glyph-ID = CID) oder CFF-Nachfahre (OpenType,
+    z. B. Trade Gothic LT Std), sonst None. `cff` sagt, welches von beiden."""
     if doc.xref_get_key(xref, "Subtype")[1] != "/Type0" or doc.xref_get_key(xref, "Encoding")[1] != "/Identity-H":
         return None
     nachfahre = _ref(re.sub(r"[\[\]]", "", doc.xref_get_key(xref, "DescendantFonts")[1]))
-    if not nachfahre or doc.xref_get_key(nachfahre, "Subtype")[1] != "/CIDFontType2":
+    art = doc.xref_get_key(nachfahre, "Subtype")[1] if nachfahre else ""
+    if art not in ("/CIDFontType2", "/CIDFontType0"):
         return None
-    if doc.xref_get_key(nachfahre, "CIDToGIDMap")[1] not in ("null", "/Identity"):
+    cff = art == "/CIDFontType0"
+    if not cff and doc.xref_get_key(nachfahre, "CIDToGIDMap")[1] not in ("null", "/Identity"):
         return None
     deskriptor = _ref(doc.xref_get_key(nachfahre, "FontDescriptor")[1])
-    datei = _ref(doc.xref_get_key(deskriptor, "FontFile2")[1]) if deskriptor else None
+    datei = _ref(doc.xref_get_key(deskriptor, "FontFile3" if cff else "FontFile2")[1]) if deskriptor else None
     unicode = _ref(doc.xref_get_key(xref, "ToUnicode")[1])
     if not (datei and unicode):
         return None
     name = doc.xref_get_key(xref, "BaseFont")[1].lstrip("/")
-    return {"xref": xref, "nachfahre": nachfahre, "datei": datei, "unicode": unicode,
+    return {"xref": xref, "nachfahre": nachfahre, "datei": datei, "unicode": unicode, "cff": cff,
             "name": re.sub(r"^[A-Z]{6}\+", "", name)}
 
 
@@ -223,7 +226,10 @@ class _Sicherung:
 
 def _verschmelze_cid(doc, seite, alias, kopie: dict, original: dict, ziel: str, s: _Sicherung) -> bool:
     """Gleiche CID-Schrift: Original bekommt das (vollständigere) Schriftprogramm, die Breiten und
-    Unicode-Zuordnung der Kopie dazu; der Text zeigt danach aufs Original."""
+    Unicode-Zuordnung der Kopie dazu; der Text zeigt danach aufs Original. Nur TrueType: Bei CFF
+    hängen die CIDs am charset des Programms, ein Tausch würde den Originaltext umnummerieren."""
+    if original["cff"] or kopie["cff"]:
+        return False
     s.merke(original["xref"], original["nachfahre"], original["unicode"], original["datei"])
     w = _lies_w(_objekt(doc, kopie["nachfahre"], "W"))
     w.update(_lies_w(_objekt(doc, original["nachfahre"], "W")))
@@ -260,12 +266,96 @@ def _glyphen_mit_umriss(programm: bytes) -> set[int] | None:
     return {gid for gid in range(len(werte) - 1) if werte[gid + 1] > werte[gid]}
 
 
+def _cff_index(daten: bytes, pos: int) -> tuple[list[bytes], int]:
+    """Liest einen CFF-INDEX ab `pos`, liefert die Einträge und die Position dahinter."""
+    anzahl = int.from_bytes(daten[pos:pos + 2], "big")
+    if anzahl == 0:
+        return [], pos + 2
+    groesse = daten[pos + 2]
+    start = pos + 3
+    offsets = [int.from_bytes(daten[start + i * groesse:start + (i + 1) * groesse], "big") for i in range(anzahl + 1)]
+    basis = start + (anzahl + 1) * groesse - 1
+    return [daten[basis + offsets[i]:basis + offsets[i + 1]] for i in range(anzahl)], basis + offsets[-1]
+
+
+def _cff_dict(roh: bytes) -> dict[int, list[float]]:
+    """Top DICT: Operator -> Operanden (zweibytige Operatoren als 1200 + n)."""
+    ergebnis, operanden, i = {}, [], 0
+    while i < len(roh):
+        b = roh[i]
+        if b <= 21:
+            op = 1200 + roh[i + 1] if b == 12 else b
+            i += 2 if b == 12 else 1
+            ergebnis[op], operanden = operanden, []
+        elif b == 28:
+            operanden.append(int.from_bytes(roh[i + 1:i + 3], "big", signed=True)); i += 3
+        elif b == 29:
+            operanden.append(int.from_bytes(roh[i + 1:i + 5], "big", signed=True)); i += 5
+        elif b == 30:  # Gleitkommazahl, Halbbytes bis 0xf
+            i += 1
+            while i < len(roh) and (roh[i] & 0x0F) != 0x0F and (roh[i] >> 4) != 0x0F:
+                i += 1
+            i += 1
+            operanden.append(0.0)
+        elif b <= 246:
+            operanden.append(b - 139); i += 1
+        elif b <= 250:
+            operanden.append((b - 247) * 256 + roh[i + 1] + 108); i += 2
+        elif b <= 254:
+            operanden.append(-(b - 251) * 256 - roh[i + 1] - 108); i += 2
+        else:
+            i += 1
+    return ergebnis
+
+
+def _cff_glyphen_mit_umriss(programm: bytes) -> set[int] | None:
+    """CIDs eines CFF-Programms (auch in OpenType verpackt), deren Glyphe mehr als ein bloßes
+    `endchar` ist. Subsets ersetzen entfernte Glyphen durch genau dieses eine Byte."""
+    import struct
+    try:
+        if programm[:4] == b"OTTO":
+            anzahl = struct.unpack(">H", programm[4:6])[0]
+            for i in range(anzahl):
+                eintrag = programm[12 + 16 * i:28 + 16 * i]
+                if eintrag[:4] == b"CFF ":
+                    start, laenge = struct.unpack(">II", eintrag[8:16])
+                    programm = programm[start:start + laenge]
+                    break
+            else:
+                return None
+        _namen, pos = _cff_index(programm, programm[2])
+        tops, pos = _cff_index(programm, pos)
+        top = _cff_dict(tops[0])
+        zeichen, _ = _cff_index(programm, int(top[17][0]))
+        gids = {gid for gid, z in enumerate(zeichen) if len(z) > 1}
+        if 1230 not in top:  # nicht CID-keyed: CID = GID
+            return gids
+        # CID-keyed: charset bildet GID -> CID ab (GID 0 ist .notdef)
+        cids, pos, gid = [0], int(top.get(15, [0])[0]), 1
+        if pos == 0:
+            return gids
+        art, pos = programm[pos], pos + 1
+        while gid < len(zeichen):
+            if art == 0:
+                cids.append(int.from_bytes(programm[pos:pos + 2], "big")); pos += 2; gid += 1
+            else:
+                erster = int.from_bytes(programm[pos:pos + 2], "big")
+                weitere = programm[pos + 2] if art == 1 else int.from_bytes(programm[pos + 2:pos + 4], "big")
+                pos += 3 if art == 1 else 4
+                cids += range(erster, erster + weitere + 1)
+                gid += weitere + 1
+        return {cids[g] for g in gids if g < len(cids)}
+    except (KeyError, IndexError, struct.error, ValueError):
+        return None
+
+
 def _codes_im_original(doc: pymupdf.Document, xref: int) -> dict[str, tuple[bytes, float]] | None:
     """Zeichen -> Code der Originalschrift, nur für Glyphen, die ihr Subset wirklich enthält:
     bei CID-Schriften alles aus der ToUnicode-Tabelle, bei einfachen WinAnsi-Schriften alles mit
     Breite > 0 (Word und Co. schreiben Breiten nur für genutzte Zeichen)."""
     if (cid := _cid_schrift(doc, xref)):
-        umrisse = _glyphen_mit_umriss(doc.xref_stream(cid["datei"]))
+        programm = doc.xref_stream(cid["datei"])
+        umrisse = _cff_glyphen_mit_umriss(programm) if cid["cff"] else _glyphen_mit_umriss(programm)
         breiten = _lies_w(_objekt(doc, cid["nachfahre"], "W"))
         standard = float(doc.xref_get_key(cid["nachfahre"], "DW")[1]) if doc.xref_get_key(cid["nachfahre"], "DW")[0] != "null" else 1000.0
         tabelle: dict[str, tuple[bytes, float]] = {}
@@ -373,8 +463,10 @@ def _text_gleich(a: list, b: list, toleranz: float = 0.1) -> bool:
 
 def _grund(doc, seite, alias, kopie: dict | None, kandidaten: list[int]) -> str:
     """Warum eine eingefügte Schrift nicht mit dem Original zusammengeht, in Worten."""
+    if not kopie:
+        return "weil ihr Schriftformat für das Zusammenführen noch nicht unterstützt wird"
     if not kandidaten:
-        return "das PDF enthält keine gleichnamige Originalschrift"
+        return "weil das PDF keine passende Originalschrift enthält"
     benutzt: set[str] = set()
     if kopie:
         unicode = _lies_tounicode(doc.xref_stream(kopie["unicode"]))
@@ -390,6 +482,8 @@ def _grund(doc, seite, alias, kopie: dict | None, kandidaten: list[int]) -> str:
     fehlend = sorted(z for z in benutzt if z not in vorhanden and _GLEICHE_GLYPHE.get(z) not in vorhanden)
     if fehlend:
         return f"weil „{''.join(fehlend)}“ in der eingebetteten Originalschrift fehlt"
+    if not any(_codes_im_original(doc, ox) for ox in kandidaten):
+        return "weil das Schriftformat des Originals für das Zusammenführen noch nicht unterstützt wird"
     return "weil sie sich nicht verlustfrei mit der Originalschrift zusammenführen lässt"
 
 
@@ -461,8 +555,11 @@ def vereinheitliche_schriften(doc: pymupdf.Document, herkunft: dict[str, set[str
                 _setze_ressource(doc, seite, "Font", ziel, xref)
                 _setze_ressource(doc, seite, "Font", alias, None)
                 _benenne_um(seite, alias, ziel)
-                hinweise.append(f"S. {seite.number + 1}: {name} bleibt zusätzlich im PDF, "
-                                + _grund(doc, seite, ziel, kopie, kandidaten))
+                # Nur melden, wenn wirklich zwei Fassungen derselben Schrift im PDF stehen. Hat der
+                # neue Text das Original ganz verdrängt (ganze Zeile neu gesetzt), gibt es nur eine.
+                if any(n == normiert(name) or n in ersetzt for n, _ in originale):
+                    hinweise.append(f"S. {seite.number + 1}: {name} bleibt zusätzlich im PDF, "
+                                    + _grund(doc, seite, ziel, kopie, kandidaten))
     return hinweise, umkodiert
 
 

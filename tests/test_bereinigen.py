@@ -160,3 +160,57 @@ def test_dokumentangaben_ueberschreiben(vorbearbeitet, tmp_path):
     meta = pymupdf.open(aus).metadata
     assert meta["title"] == "Rechnung (April)" and meta["author"] == "Jürgen Köhler"
     assert not meta["keywords"] and not meta["creationDate"]
+
+
+@pytest.fixture
+def cff_pdf(tmp_path):
+    """OpenType-Schrift mit CFF-Umrissen (wie Hausschriften aus InDesign). Trade Gothic ist
+    lizenzpflichtig und nur lokal installiert, in der CI werden diese Tests übersprungen."""
+    from test_ersetzen import _pdf_mit_postscript_namen, _trade_gothic
+
+    schriften = _trade_gothic("Trade Gothic LT Std Bold No. 2.otf")
+    if not schriften:
+        pytest.skip("keine CFF-Testschrift (Trade Gothic LT Std) installiert")
+    return _pdf_mit_postscript_namen(tmp_path / "cff.pdf", schriften)
+
+
+def test_cff_schrift_wird_wiederverwendet(cff_pdf, tmp_path):
+    sauber, roh = tmp_path / "sauber.pdf", tmp_path / "roh.pdf"
+    regeln = [Regel("100,00", "110,00")]  # alle Ziffern stecken schon im Original-Subset
+    hinweise: list[str] = []
+    bearbeite(cff_pdf, roh, regeln, sauber=False)
+    bearbeite(cff_pdf, sauber, regeln, hinweise=hinweise)
+    assert hinweise == []
+    assert len(schriften(sauber)) == 1
+    assert "Summe 110,00" in text(sauber)
+    a, b = (pymupdf.open(p)[0] for p in (roh, sauber))
+    assert bereinigen._text_gleich(bereinigen._zeichen(a), bereinigen._zeichen(b), toleranz=0.02)
+    assert bereinigen._glyphen_gleich(a, b)
+
+
+def test_cff_fehlende_zeichen_werden_genannt(cff_pdf, tmp_path):
+    aus = tmp_path / "aus.pdf"
+    hinweise: list[str] = []
+    bearbeite(cff_pdf, aus, [Regel("100,00", "987,45")], hinweise=hinweise)
+    assert len(hinweise) == 1 and "„45789“" in hinweise[0]
+    assert "Summe 987,45" in text(aus)
+
+
+def test_ganz_verdraengtes_original_wird_nicht_gemeldet(cff_pdf, tmp_path):
+    """Wird die ganze Zeile neu gesetzt, bleibt nur eine Schrift übrig: keine Doppelung, kein Hinweis."""
+    aus = tmp_path / "aus.pdf"
+    hinweise: list[str] = []
+    bearbeite(cff_pdf, aus, [Regel("Summe", "Muse")], hinweise=hinweise)
+    assert hinweise == [] and len(schriften(aus)) == 1
+
+
+def test_cff_glyphen_erkennung():
+    """Subset aus geleerten Glyphen (nur `endchar`) und echten Umrissen."""
+    from test_ersetzen import _trade_gothic
+
+    schriften_ = _trade_gothic("Trade Gothic LT Std Bold No. 2.otf")
+    if not schriften_:
+        pytest.skip("keine CFF-Testschrift installiert")
+    voll = bereinigen._cff_glyphen_mit_umriss(schriften_[0].read_bytes())
+    assert voll and len(voll) > 200  # vollständige Schrift: praktisch alle Glyphen mit Umriss
+    assert bereinigen._cff_glyphen_mit_umriss(b"kein CFF") is None
